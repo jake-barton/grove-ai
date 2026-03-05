@@ -46,8 +46,11 @@ async function runResearch(
   companies: string[],
   origin: string,
   emit: (c: StreamChunk) => void,
-  prefix = ''
+  prefix = '',
+  isBridge = false
 ): Promise<{ results: string; savedCompanies: { company_name: string }[]; failCount: number }> {
+  // When running via the local bridge, always save to local Next.js — never Vercel
+  if (isBridge) origin = 'http://localhost:3742';
   let results = prefix;
   let failCount = 0;
   const savedCompanies: { company_name: string }[] = [];
@@ -90,11 +93,17 @@ async function runResearch(
         });
         if (saveResponse.ok) {
           savedCompanies.push(companyData);
-          emit({ type: 'step', text: `Saved ${companyData.company_name} to pipeline`, icon: '💾', sub: `Score: ${companyData.sponsorship_likelihood_score}/10` });
+          emit({ type: 'step', text: `Saved ${companyData.company_name} to pipeline`, icon: '💾', sub: `Score: ${companyData.sponsorship_likelihood_score}/10 · ${companyData.industry || 'Unknown industry'}` });
         } else {
+          const errBody = await saveResponse.text().catch(() => 'no body');
+          console.error(`❌ Save failed for ${companyData.company_name}: ${saveResponse.status} — ${errBody}`);
+          emit({ type: 'step', text: `Save failed for ${companyData.company_name}`, icon: '❌', sub: `${saveResponse.status}: ${errBody.slice(0, 80)}` });
           savedCompanies.push(companyData);
         }
-      } catch {
+      } catch (saveErr) {
+        const msg = saveErr instanceof Error ? saveErr.message : String(saveErr);
+        console.error(`❌ Save exception for ${companyData.company_name}:`, msg);
+        emit({ type: 'step', text: `Save error for ${companyData.company_name}`, icon: '❌', sub: msg.slice(0, 80) });
         savedCompanies.push(companyData);
       }
 
@@ -129,6 +138,10 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { messages, action, companyNames } = body;
 
+    // Detect if request came through the local grove-bridge (sets x-grove-bridge: 1)
+    // When true, all internal fetches (save, clear) must target localhost:3742, not Vercel
+    const isBridge = request.headers.get('x-grove-bridge') === '1';
+
     // Handle deep research action — STREAMING
     if (action === 'deep_research') {
       if (!companyNames || !Array.isArray(companyNames)) {
@@ -139,7 +152,7 @@ export async function POST(request: NextRequest) {
         emit({ type: 'step', text: `Starting deep research on ${companyNames.length} companies`, icon: '🚀', sub: companyNames.join(', ') });
 
         const results = `# Deep Research Results\n\nResearching **${companyNames.length}** companies with strict validation…\n\n---\n\n`;
-        const { results: r, savedCompanies, failCount } = await runResearch(companyNames, request.nextUrl.origin, emit, results);
+        const { results: r, savedCompanies, failCount } = await runResearch(companyNames, request.nextUrl.origin, emit, results, isBridge);
 
         const finalResults = r +
           `## Summary\n\n✅ **Passed Validation:** ${savedCompanies.length}/${companyNames.length}\n\n` +
@@ -196,9 +209,12 @@ export async function POST(request: NextRequest) {
         emit({ type: 'step', text: 'Clearing all companies from database…', icon: '🗑️' });
 
         try {
-          const clearResponse = await fetch(`${request.nextUrl.origin}/api/companies/clear`, { method: 'DELETE' });
+          const clearOrigin = isBridge ? 'http://localhost:3742' : request.nextUrl.origin;
+          const clearResponse = await fetch(`${clearOrigin}/api/companies/clear`, { method: 'DELETE' });
           if (!clearResponse.ok) {
-            emit({ type: 'result', message: '❌ Failed to delete companies. Please try again.' });
+            const errBody = await clearResponse.text().catch(() => '');
+            console.error('❌ Clear failed:', clearResponse.status, errBody);
+            emit({ type: 'result', message: `❌ Failed to delete companies (${clearResponse.status}). ${errBody.slice(0, 100)}` });
             return;
           }
 
@@ -231,7 +247,7 @@ export async function POST(request: NextRequest) {
           emit({ type: 'step', text: `Selected ${chosenCompanies.length} companies to research`, icon: '🎯', sub: chosenCompanies.join(', ') });
 
           const prefix = `✅ All companies deleted.\n\n# 🔬 Researching ${chosenCompanies.length} Fresh Companies\n\nSelected: **${chosenCompanies.join(', ')}**\n\n---\n\n`;
-          const { results, savedCompanies, failCount } = await runResearch(chosenCompanies, request.nextUrl.origin, emit, prefix);
+          const { results, savedCompanies, failCount } = await runResearch(chosenCompanies, request.nextUrl.origin, emit, prefix, isBridge);
 
           const final = results + `## Summary\n\n✅ **Saved:** ${savedCompanies.length}/${chosenCompanies.length}\n\n` +
             (failCount > 0 ? `❌ **Failed:** ${failCount}\n\n` : '') +
@@ -316,7 +332,7 @@ export async function POST(request: NextRequest) {
         emit({ type: 'step', text: `Found ${existingCompanies.length} companies to refresh`, icon: '🔄', sub: existingCompanies.join(', ') });
 
         const prefix = `# 🔄 Re-Researching ${existingCompanies.length} Existing Companies\n\nUpdating: **${existingCompanies.join(', ')}**\n\n---\n\n`;
-        const { results, savedCompanies, failCount } = await runResearch(existingCompanies, request.nextUrl.origin, emit, prefix);
+        const { results, savedCompanies, failCount } = await runResearch(existingCompanies, request.nextUrl.origin, emit, prefix, isBridge);
 
         const final = results +
           `## Summary\n\n✅ **Updated:** ${savedCompanies.length}/${existingCompanies.length}\n\n` +
@@ -378,7 +394,7 @@ export async function POST(request: NextRequest) {
         emit({ type: 'step', text: `Running verified research for ${contactCompany}…`, icon: '🔬', sub: 'Only confirmed current employees will be saved' });
 
         const prefix = `# 🔬 Researching ${contactCompany}\n\nRunning a real web search to find a **verified, current** contact — no guessing.\n\n---\n\n`;
-        const { results, savedCompanies, failCount } = await runResearch([contactCompany], request.nextUrl.origin, emit, prefix);
+        const { results, savedCompanies, failCount } = await runResearch([contactCompany], request.nextUrl.origin, emit, prefix, isBridge);
 
         const final = results +
           (savedCompanies.length > 0
@@ -411,7 +427,7 @@ export async function POST(request: NextRequest) {
         emit({ type: 'step', text: `Queued ${chosenCompanies.length} companies for research`, icon: '🎯', sub: chosenCompanies.join(', ') });
 
         const prefix = `# 🔬 Researching ${chosenCompanies.length} Companies for Sloss.Tech\n\nSelected: **${chosenCompanies.join(', ')}**\n\n---\n\n`;
-        const { results, savedCompanies, failCount } = await runResearch(chosenCompanies, request.nextUrl.origin, emit, prefix);
+        const { results, savedCompanies, failCount } = await runResearch(chosenCompanies, request.nextUrl.origin, emit, prefix, isBridge);
 
         const final = results +
           `## Summary\n\n✅ **Saved to pipeline:** ${savedCompanies.length}/${chosenCompanies.length}\n\n` +

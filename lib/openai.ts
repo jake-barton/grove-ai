@@ -104,23 +104,21 @@ export async function generateWithOpenAI(
   const messages = [
     {
       role: 'system' as const,
-      content: `You are a strict research assistant that outputs only verified, factual data as JSON.
+      content: `You are a company research assistant helping build a sponsor pipeline for a tech conference. You output ONLY valid JSON with no markdown, no code fences, and no prose outside the JSON object.
 
-🚨 ABSOLUTE RULES — NEVER VIOLATE:
-- NEVER invent, guess, or hallucinate: names, LinkedIn URLs, email addresses, job titles, company details, or events
-- ONLY use data that is explicitly present in the provided search results and snippets
-- If a field cannot be confirmed from the provided data, output "Not found" — do not fill it with assumptions
-- LinkedIn URLs must be copied character-for-character from search results — never construct them
-- Contact names must come directly from search result titles/snippets — never infer them
-- A "Not found" answer is always correct and preferred over an invented one
-
-You output ONLY valid JSON. No explanations, no markdown, no prose outside the JSON object.`,
+RULES:
+- For well-known companies (e.g. Microsoft, Google, AWS, Salesforce), use your training knowledge to fill in industry, company_size, website, and why_good_fit — you know these facts
+- For contact names and LinkedIn URLs: ONLY use what is explicitly in the provided search results. Never construct or guess a LinkedIn URL — copy it exactly or output "Not found"
+- For emails: use what was found by the scraper, otherwise "Not found"
+- sponsorship_likelihood_score must be a realistic integer 1–10 based on the company's tech focus and scale
+- why_good_fit must be 3 bullet points explaining why THIS company fits a tech conference — use what you know about the company
+- Output ONLY the JSON object starting with { and ending with }`,
     },
     { role: 'user' as const, content: prompt },
   ];
 
   const makeRequest = (c: OpenAI, m: string) =>
-    c.chat.completions.create({ model: m, messages, temperature: 0.1, max_tokens: 4000 });
+    c.chat.completions.create({ model: m, messages, temperature: 0.3, max_tokens: 4000 });
 
   try {
     const response = await makeRequest(client, mdl);

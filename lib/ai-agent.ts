@@ -248,28 +248,28 @@ ${[...companySearchResults, ...sponsorshipSearchResults].slice(0, 8).map(r => r.
 **Emails Found:**
 ${emails.slice(0, 3).join(', ') || 'none'}
 
-Based on ALL of the above data, output a single JSON object with these exact fields. Fill every field with real information extracted from the data — do NOT copy the field descriptions as values:
+Based on the search data above AND your training knowledge about "${companyName}", output a single JSON object. Fill every field with real data — do NOT output the field descriptions as values:
 
 {
   "company_name": "${companyName}",
-  "industry": "the actual industry of ${companyName} based on what they do (e.g. Cloud Computing, Cybersecurity, Financial Technology)",
-  "company_size": "actual size from snippets (e.g. 200000+ employees, Series B startup, publicly traded) or estimate from context",
+  "industry": "<e.g. Cloud Computing, Cybersecurity, SaaS, Financial Technology>",
+  "company_size": "<e.g. 220,000+ employees (publicly traded) or Series B startup ~150 employees>",
   "website": "${companyWebsite || 'Not found'}",
-  "linkedin_company": "copy the exact URL from LinkedIn Company Search Results above, or Not found",
-  "contact_name": "copy the exact person's name from LinkedIn People results if they currently work at ${companyName} in marketing/partnerships, or Not found",
-  "contact_position": "their exact job title at ${companyName}, or Not found",
-  "contact_linkedin": "copy the exact linkedin.com/in/... URL from search results, or Not found",
+  "linkedin_company": "<exact URL from LinkedIn Company Search Results above, or Not found>",
+  "contact_name": "<exact person name from LinkedIn People results above if they currently work at ${companyName}, or Not found>",
+  "contact_position": "<their exact job title, or Not found>",
+  "contact_linkedin": "<exact linkedin.com/in/... URL copied from search results above, or Not found>",
   "contact_info": "${emails[0] || 'Not found'}",
-  "email_format": "email pattern like firstname@company.com if determinable, or Not available",
-  "previously_sponsored": ["list specific real events ${companyName} has sponsored from Sponsorship History, empty array if none found"],
-  "what_they_sponsored": "describe what ${companyName} has specifically sponsored, or No verified sponsorships found",
-  "why_good_fit": "• Write a real reason why ${companyName}'s products/services align with a tech conference audience\n• Write a real reason about their developer community investment or tech focus\n• Write a real reason about their sponsorship track record or company scale",
+  "email_format": "<e.g. firstname@microsoft.com, or Not available>",
+  "previously_sponsored": ["<specific events from Sponsorship History above>"],
+  "what_they_sponsored": "<what ${companyName} has sponsored or 'No verified sponsorships found'>",
+  "why_good_fit": "• <reason 1: how ${companyName}'s products/services align with developers/tech professionals>\n• <reason 2: their investment in developer community, open source, or tech ecosystems>\n• <reason 3: their sponsorship history or company scale that makes them a strong prospect>",
   "sponsorship_likelihood_score": 7,
-  "relevant_notes": "Write 1-2 sentences of useful insight about ${companyName} as a Sloss.Tech sponsor prospect",
-  "relevant_links": ["up to 3 exact URLs from the search data above"]
+  "relevant_notes": "<1-2 sentences of useful insight about ${companyName} as a Sloss.Tech sponsor>",
+  "relevant_links": ["<up to 3 exact URLs from the search data above>"]
 }
 
-IMPORTANT: Output ONLY the JSON object. No markdown. No explanation. No code fences. Start your response with { and end with }`;
+Output ONLY the JSON object. No markdown. No code fences. Start with { end with }.`;
 
   const aiResponse = await generateWithOpenAI(researchPrompt);
 
@@ -354,24 +354,26 @@ IMPORTANT: Output ONLY the JSON object. No markdown. No explanation. No code fen
   let validatedCompanyLinkedIn = validateLinkedInUrl(companyData.linkedin_company);
   
   // Verify LinkedIn URLs came from search results
-  // Normalise URL: strip protocol + any subdomain, keep just the path for comparison
-  const normaliseLinkedIn = (url: string) => {
+  // Extract just the profile slug from a LinkedIn URL (handles all regional subdomains:
+  // ca.linkedin.com, in.linkedin.com, uk.linkedin.com, www.linkedin.com — all resolve to same slug)
+  const extractLinkedInSlug = (url: string): string => {
     try {
-      const u = new URL(url.toLowerCase());
-      // Strip subdomain — keep only path: /in/xxx or /company/xxx
-      return u.pathname.replace(/\/$/, '');
+      const path = new URL(url.toLowerCase()).pathname;
+      const inMatch = path.match(/\/in\/([^/]+)/);
+      const coMatch = path.match(/\/company\/([^/]+)/);
+      return inMatch?.[1] ?? coMatch?.[1] ?? '';
     } catch {
-      return url.toLowerCase();
+      return '';
     }
   };
 
   if (validatedContactLinkedIn) {
-    const normalised = normaliseLinkedIn(validatedContactLinkedIn);
-    const foundInResults = [...allSearchResultUrls].some(
-      u => normaliseLinkedIn(u) === normalised || u.includes(validatedContactLinkedIn!.toLowerCase())
+    const slug = extractLinkedInSlug(validatedContactLinkedIn);
+    const foundInResults = slug.length > 2 && [...allSearchResultUrls].some(
+      u => extractLinkedInSlug(u) === slug
     );
     if (!foundInResults) {
-      console.warn(`⚠️ Contact LinkedIn URL not found in search results, rejecting: ${validatedContactLinkedIn}`);
+      console.warn(`⚠️ Contact LinkedIn slug "${slug}" not found in search results, rejecting: ${validatedContactLinkedIn}`);
       validatedContactLinkedIn = null;
     } else {
       console.log(`✅ Contact LinkedIn verified in search results: ${validatedContactLinkedIn}`);
@@ -379,12 +381,12 @@ IMPORTANT: Output ONLY the JSON object. No markdown. No explanation. No code fen
   }
   
   if (validatedCompanyLinkedIn) {
-    const normalised = normaliseLinkedIn(validatedCompanyLinkedIn);
-    const foundInResults = [...allSearchResultUrls].some(
-      u => normaliseLinkedIn(u) === normalised || u.includes(validatedCompanyLinkedIn!.toLowerCase())
+    const slug = extractLinkedInSlug(validatedCompanyLinkedIn);
+    const foundInResults = slug.length > 2 && [...allSearchResultUrls].some(
+      u => extractLinkedInSlug(u) === slug
     );
     if (!foundInResults) {
-      console.warn(`⚠️ Company LinkedIn URL not found in search results, rejecting: ${validatedCompanyLinkedIn}`);
+      console.warn(`⚠️ Company LinkedIn slug "${slug}" not found in search results, rejecting: ${validatedCompanyLinkedIn}`);
       validatedCompanyLinkedIn = null;
     } else {
       console.log(`✅ Company LinkedIn verified in search results: ${validatedCompanyLinkedIn}`);
@@ -605,24 +607,22 @@ IMPORTANT: Output ONLY the JSON object. No markdown. No explanation. No code fen
   })();
   console.log(`🎯 Contact confidence for ${validatedCompanyName}: ${contactConfidence}`);
 
-  // ── #5: Grounded sponsorship score — derived from real signals, not AI vibes ──
-  const scoreSignals = {
-    hasWebsite:           validatedWebsite ? 10 : 0,
-    hasContactName:       finalContactName ? 15 : 0,
-    hasContactLinkedIn:   finalContactLinkedIn ? 15 : 0,
-    hasCompanyLinkedIn:   validatedCompanyLinkedIn ? 5 : 0,
-    hasEmail:             validatedContactEmail ? 10 : 0,
-    hasPreviousSponsored: (Array.isArray(companyData.previously_sponsored) &&
-                           companyData.previously_sponsored.length > 0) ? 20 : 0,
-    hasIndustry:          (companyData.industry && companyData.industry !== 'Unknown') ? 5 : 0,
-    hasCompanySize:       (companyData.company_size && companyData.company_size !== 'Unknown') ? 5 : 0,
-    hasRelevantNotes:     sanitizedNotes ? 5 : 0,
-    dataQualityBonus:     validation.score >= 80 ? 10 : validation.score >= 60 ? 5 : 0,
+  // ── #5: Sponsorship likelihood score — based on prospect quality, not just data completeness ──
+  // Use the AI's score as the base (it has context on the company's fit), then adjust for signals
+  const aiScore = typeof companyData.sponsorship_likelihood_score === 'number'
+    ? Math.min(10, Math.max(1, companyData.sponsorship_likelihood_score))
+    : 5;
+
+  const scoreAdjustments = {
+    hasContact:          finalContactName && finalContactLinkedIn ? +1 : 0,   // bonus for verified contact
+    hasPrevSponsored:    (Array.isArray(companyData.previously_sponsored) &&
+                          companyData.previously_sponsored.length > 0) ? +1 : 0,
+    hasEmail:            validatedContactEmail ? +1 : 0,
+    missingWebsite:      !validatedWebsite ? -1 : 0,   // mild penalty only
   };
-  const groundedScore = Math.min(10, Math.max(1,
-    Math.round(Object.values(scoreSignals).reduce((a, b) => a + b, 0) / 10)
-  ));
-  console.log(`📊 Grounded score for ${validatedCompanyName}: ${groundedScore}/10`, scoreSignals);
+  const adjustment = Object.values(scoreAdjustments).reduce((a, b) => a + b, 0);
+  const groundedScore = Math.min(10, Math.max(1, aiScore + adjustment));
+  console.log(`📊 Score for ${validatedCompanyName}: AI=${aiScore} adj=${adjustment} → ${groundedScore}/10`);
 
   // Return structured, validated company data
   return {

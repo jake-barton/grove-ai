@@ -9,9 +9,15 @@
 import http from 'http';
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = join(__dirname, '..');
 
 const PORT = 7842;
 const LM_PORT = 1234;
+const LOCAL_NEXT_PORT = 3742;   // local Next.js dev server for research (no timeout)
 const VERCEL_URL = 'https://techbirmingham-sponsor-ai.vercel.app';
 const TUNNEL_SECRET = 'grove-tunnel-2026';
 const CF_BIN = '/opt/homebrew/bin/cloudflared';
@@ -23,6 +29,8 @@ let state = {
   model: null,
   log: [],
   cfProcess: null,
+  nextProcess: null,
+  nextReady: false,
   lmCheckInterval: null,
 };
 
@@ -47,6 +55,58 @@ async function getModel() {
     const data = await res.json();
     return data?.data?.[0]?.id ?? 'unknown model';
   } catch { return 'unknown model'; }
+}
+
+// ── Local Next.js dev server (for research — no timeout) ─────────────────────
+function startNextDev() {
+  if (state.nextProcess) return;
+  addLog('info', `Starting local Next.js dev server on port ${LOCAL_NEXT_PORT}…`);
+
+  const next = spawn('npx', ['next', 'dev', '--port', String(LOCAL_NEXT_PORT)], {
+    cwd: PROJECT_ROOT,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PORT: String(LOCAL_NEXT_PORT) },
+  });
+  state.nextProcess = next;
+
+  const rlOut = createInterface({ input: next.stdout });
+  const rlErr = createInterface({ input: next.stderr });
+
+  rlOut.on('line', line => {
+    if (line.includes('Ready') || line.includes('ready') || line.includes('localhost')) {
+      state.nextReady = true;
+      addLog('ok', `Local Next.js ready on port ${LOCAL_NEXT_PORT}`);
+    }
+  });
+  rlErr.on('line', line => {
+    if (line.includes('error') || line.includes('Error')) {
+      addLog('warn', `next dev: ${line.trim().slice(0, 120)}`);
+    }
+  });
+
+  next.on('exit', code => {
+    addLog('warn', `next dev exited (code ${code})`);
+    state.nextProcess = null;
+    state.nextReady = false;
+  });
+}
+
+async function waitForNextDev(timeoutMs = 60000) {
+  if (state.nextReady) return true;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(`http://localhost:${LOCAL_NEXT_PORT}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'ping' }], _ping: true }),
+        signal: AbortSignal.timeout(3000),
+      });
+      if (r.status < 500) { state.nextReady = true; return true; }
+    } catch { /* not ready yet */ }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  return false;
 }
 
 // ── Register URL with Vercel ─────────────────────────────────────────────────
@@ -168,6 +228,9 @@ async function start() {
   }
   addLog('ok', `LM Studio detected on port ${LM_PORT}`);
 
+  // Start local Next.js dev server so research runs with no timeout
+  startNextDev();
+
   const url = await startTunnel();
   addLog('info', 'Registering with Grove...');
   const ok = await registerWithVercel(url);
@@ -201,6 +264,7 @@ async function shutdown() {
   state.phase = 'stopped';
   if (state.lmCheckInterval) clearInterval(state.lmCheckInterval);
   if (state.cfProcess) { try { state.cfProcess.kill(); } catch {} }
+  if (state.nextProcess) { try { state.nextProcess.kill(); } catch {} }
   await disconnectVercel();
   addLog('ok', 'Grove switched back to OpenAI. Goodbye!');
   process.exit(0);
@@ -233,8 +297,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // POST /research — proxy research requests to Vercel's /api/chat but run locally
-  // This bypasses Vercel's 10s function timeout by running everything on this machine
+  // POST /research — proxy research requests to LOCAL Next.js (no Vercel 10s timeout)
   if (req.method === 'POST' && url.pathname === '/research') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -250,16 +313,20 @@ const server = http.createServer((req, res) => {
       };
 
       try {
+        // Wait for local Next.js dev server to be ready (starts with bridge)
+        if (!state.nextReady) {
+          emit({ type: 'step', text: 'Warming up local server…', icon: '⏳', sub: 'First request takes ~30s' });
+          const ready = await waitForNextDev(90_000);
+          if (!ready) throw new Error('Local Next.js server did not start in time');
+        }
+
         const parsed = JSON.parse(body);
-        // Forward to our own /api/chat on Vercel but with a special header
-        // to indicate it should run with no timeout constraints
-        // Actually: just proxy directly to Vercel — but since Vercel will timeout,
-        // we instead call Vercel's chat endpoint from here (local machine, no timeout)
-        const response = await fetch(`${VERCEL_URL}/api/chat`, {
+        // Call localhost — no serverless timeout
+        const response = await fetch(`http://localhost:${LOCAL_NEXT_PORT}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-grove-bridge': '1' },
           body: JSON.stringify(parsed),
-          signal: AbortSignal.timeout(300_000), // 5 min — no Vercel timeout when called from bridge
+          signal: AbortSignal.timeout(300_000), // 5 min local timeout
         });
 
         const contentType = response.headers.get('content-type') || '';

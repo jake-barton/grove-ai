@@ -85,8 +85,13 @@ export default function Home() {
       lowerContent.includes('sponsor') || lowerContent.includes('compan') ||
       lowerContent.includes('contact') || lowerContent.includes('suggest');
 
+    const isDeleteIntent =
+      lowerContent.includes('delete') || lowerContent.includes('remove all') ||
+      lowerContent.includes('clear all') || lowerContent.includes('wipe') ||
+      lowerContent.includes('erase');
+
     let chatEndpoint = '/api/chat';
-    if (isResearchIntent) {
+    if (isResearchIntent || isDeleteIntent) {
       try {
         const bridgeStatus = await fetch('http://localhost:7842/status', { signal: AbortSignal.timeout(500) });
         const bridgeData = await bridgeStatus.json();

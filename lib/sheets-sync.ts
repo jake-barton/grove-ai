@@ -31,20 +31,21 @@ const HEADER_BORDER = { red: 0.18, green: 0.42, blue: 0.55 };
 const DATA_TEXT    = { red: 0.2,  green: 0.2,  blue: 0.2  };
 const WHITE        = { red: 1,    green: 1,    blue: 1    };
 
-let sheetsInstance: sheets_v4.Sheets | null = null;
-
+// No singleton — always create fresh client so hot-reload picks up new env vars
 async function getSheetsClient(): Promise<sheets_v4.Sheets | null> {
-  if (sheetsInstance) return sheetsInstance;
   const key = process.env.GOOGLE_SHEETS_PRIVATE_KEY?.replace(/\\n/g, '\n');
   const email = process.env.GOOGLE_SHEETS_CLIENT_EMAIL;
   if (!key || !email) {
     console.warn('⚠️ Google Sheets credentials not configured. Sync disabled.');
     return null;
   }
+  if (!key.includes('BEGIN PRIVATE KEY')) {
+    console.error('❌ GOOGLE_SHEETS_PRIVATE_KEY is malformed — missing header. Check .env.local');
+    return null;
+  }
   const auth = new google.auth.JWT({ email, key, scopes: SCOPES });
-  sheetsInstance = google.sheets({ version: 'v4', auth });
   console.log('✅ Google Sheets API initialized');
-  return sheetsInstance;
+  return google.sheets({ version: 'v4', auth });
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

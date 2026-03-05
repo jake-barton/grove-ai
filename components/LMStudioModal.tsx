@@ -214,23 +214,19 @@ export default function LMStudioModal({ isOpen, onClose, currentURL, onStatusCha
           background: 'rgba(108,173,223,0.06)', border: '1px solid rgba(108,173,223,0.15)',
         }}>
           <p style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 700, color: 'var(--tb-blue)' }}>
-            How to get your LM Studio URL
+            How to connect LM Studio
           </p>
-          <ol style={{ margin: 0, padding: '0 0 0 18px', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
-            <li>Open <strong style={{ color: 'var(--text-primary)' }}>LM Studio</strong> and load any model</li>
-            <li>Go to <strong style={{ color: 'var(--text-primary)' }}>Developer → Local Server</strong> (left sidebar)</li>
-            <li>Click <strong style={{ color: 'var(--text-primary)' }}>Start Server</strong></li>
-            <li>Click <strong style={{ color: 'var(--text-primary)' }}>Server Settings</strong> → enable <strong style={{ color: 'var(--tb-orange)' }}>LM Studio Cloud Tunnel</strong></li>
-            <li>Copy the <strong style={{ color: 'var(--text-primary)' }}>https://…lmstudio.ai</strong> URL it shows you</li>
+          <ol style={{ margin: 0, padding: '0 0 0 18px', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
+            <li>Open <strong style={{ color: 'var(--text-primary)' }}>LM Studio</strong> → load a model → click <strong style={{ color: 'var(--text-primary)' }}>Start Server</strong></li>
+            <li>Double-click <strong style={{ color: 'var(--tb-orange)' }}>Start Grove with LM Studio</strong> on your Desktop</li>
+            <li>A Terminal window opens — it auto-creates a secure tunnel and pastes the URL here</li>
+            <li>Or paste the URL manually below and click Connect</li>
           </ol>
           <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'rgba(242,101,34,0.08)', border: '1px solid rgba(242,101,34,0.2)' }}>
             <p style={{ margin: 0, fontSize: 11, color: 'rgb(253,186,116)' }}>
-              ⚠️ <strong>Must use the Cloud Tunnel URL</strong> — local IPs like <code style={{ background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 3 }}>192.168.x.x</code> or <code style={{ background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 3 }}>localhost</code> won&apos;t work from the cloud app.
+              ⚠️ <strong>Local IPs won&apos;t work</strong> — the URL must be a public <code style={{ background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 3 }}>https://</code> address. The launcher script handles this automatically.
             </p>
           </div>
-          <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--text-muted)' }}>
-            The URL looks like: <code style={{ color: 'var(--tb-blue)', background: 'rgba(108,173,223,0.1)', padding: '1px 5px', borderRadius: 4 }}>https://abc123.lmstudio.ai</code>
-          </p>
         </div>
 
         {/* URL input */}

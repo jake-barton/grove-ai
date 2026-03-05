@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────
-#  Double-click this file to start Grove with LM Studio.
-#  macOS will open it in Terminal automatically.
-# ─────────────────────────────────────────────────────────────
+# Double-click this file to connect LM Studio to Grove.
 cd "$(dirname "$0")"
-exec bash scripts/start-lmstudio-tunnel.sh
+bash scripts/start-lmstudio-tunnel.sh

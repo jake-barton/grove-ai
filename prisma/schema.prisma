@@ -1,0 +1,41 @@
+// Prisma schema for TechBirmingham Sponsor Research Platform
+// Database: Prisma Postgres (hosted)
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Company {
+  id                         String   @id @default(cuid())
+  company_name               String   @unique
+  draft                      Boolean  @default(false)
+  outreach_status            String   @default("not_started")
+  email_format               String?
+  contact_name               String?
+  contact_position           String?
+  contact_info               String?
+  contact_linkedin           String?
+  linkedin_company           String?
+  confirmed_emails           String[] @default([])
+  bounced_emails             String[] @default([])
+  previously_sponsored       Boolean  @default(false)
+  previous_events            String[] @default([])
+  what_they_sponsored        String?
+  why_good_fit               String?
+  relevant_links             String[] @default([])
+  industry                   String?
+  company_size               String?
+  website                    String?
+  notes                      String?
+  sponsorship_likelihood_score Int?   @default(5)
+  approved_for_export        Boolean  @default(false)
+  created_at                 DateTime @default(now())
+  updated_at                 DateTime @updatedAt
+
+  @@map("companies")
+}

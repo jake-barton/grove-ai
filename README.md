@@ -1,36 +1,72 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# TechBirmingham AI Sponsor Research Platform
 
-## Getting Started
+## 🚀 Setup Instructions
 
-First, run the development server:
+### 1. Install Ollama (Local AI)
 
+**macOS:**
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+brew install ollama
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+**Or download from:** https://ollama.ai/download
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+**Start Ollama:**
+```bash
+ollama serve
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+**Download AI Model:**
+```bash
+ollama pull llama3.1:8b
+```
 
-## Learn More
+### 2. Set Up Supabase Database
 
-To learn more about Next.js, take a look at the following resources:
+1. Go to https://supabase.com and create a free account
+2. Create a new project
+3. Go to **SQL Editor** and run the schema from SETUP.md
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### 3. Get API Keys (Free Tiers Available)
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+**Serper API:** https://serper.dev (2,500 free searches)
+**Hunter.io:** https://hunter.io (50 free searches/month)
 
-## Deploy on Vercel
+### 4. Set Up Google Sheets Integration
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+See SETUP.md for detailed instructions
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### 5. Configure Environment Variables
+
+Fill in `.env.local` with your credentials
+
+### 6. Run the App
+
+```bash
+npm install
+npm run dev
+```
+
+Open http://localhost:3000
+
+---
+
+## 🎯 Features
+
+- 🤖 AI-powered company research
+- 💬 Conversational interface
+- 📊 Smart sponsorship scoring
+- ✉️ Email finding & validation
+- �� Auto-export to Google Sheets
+- 🔄 Real-time sync with database
+
+---
+
+## 📝 Usage
+
+Talk to the AI naturally:
+- "Find tech companies in Birmingham"
+- "Research Microsoft"
+- "Export all to Google Sheets"
+
+See SETUP.md for complete documentation.

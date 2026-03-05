@@ -75,12 +75,12 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
               </span>
             </div>
             <div className="flex items-center gap-1.5 mt-0.5">
-              {/* 🌳 deciduous tree */}
-              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--tb-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="8" r="6"/>
-                <line x1="12" y1="14" x2="12" y2="21"/>
-                <line x1="8" y1="21" x2="16" y2="21"/>
-              </svg>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/TechBirminghamAsset 1.svg"
+                alt=""
+                style={{ width: 14, height: 14, objectFit: 'contain', opacity: 0.9 }}
+              />
               <span className="teal-shimmer text-xs font-semibold">
                 Grove — AI Sponsor Research
               </span>

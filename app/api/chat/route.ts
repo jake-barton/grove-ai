@@ -4,6 +4,9 @@ import { chatWithOpenAI, SYSTEM_PROMPT, ChatMessage } from '@/lib/openai';
 import { researchCompany, batchResearchCompanies } from '@/lib/ai-agent';
 import { handleNaturalLanguageFormat } from '@/lib/sheets-formatter';
 
+// Allow this function up to 300s — research takes time (web search + scraping + AI)
+export const maxDuration = 300;
+
 // ── Streaming helper ────────────────────────────────────────────────────────
 type StreamChunk =
   | { type: 'step';    text: string; icon?: string; sub?: string }

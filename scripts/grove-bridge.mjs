@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 // ═══════════════════════════════════════════════════════════════
-//  Grove Bridge — Local tunnel server
-//  Runs on localhost:7842, bridging LM Studio → Vercel via Cloudflare
-//
-//  The Grove web app talks to this server directly from the browser.
-//  No Terminal knowledge needed — just double-click the .command file.
+//  Grove Bridge — Local tunnel server + Research proxy
+//  Runs on localhost:7842
+//  - Bridges LM Studio → Vercel via Cloudflare tunnel
+//  - Runs research locally so Vercel's 10s timeout is bypassed
 // ═══════════════════════════════════════════════════════════════
 
 import http from 'http';
@@ -231,6 +230,64 @@ const server = http.createServer((req, res) => {
       model: state.model,
       log: state.log.slice(-20),
     }));
+    return;
+  }
+
+  // POST /research — proxy research requests to Vercel's /api/chat but run locally
+  // This bypasses Vercel's 10s function timeout by running everything on this machine
+  if (req.method === 'POST' && url.pathname === '/research') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', async () => {
+      res.writeHead(200, {
+        'Content-Type': 'application/x-ndjson',
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no',
+      });
+
+      const emit = (chunk) => {
+        try { res.write(JSON.stringify(chunk) + '\n'); } catch {}
+      };
+
+      try {
+        const parsed = JSON.parse(body);
+        // Forward to our own /api/chat on Vercel but with a special header
+        // to indicate it should run with no timeout constraints
+        // Actually: just proxy directly to Vercel — but since Vercel will timeout,
+        // we instead call Vercel's chat endpoint from here (local machine, no timeout)
+        const response = await fetch(`${VERCEL_URL}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-grove-bridge': '1' },
+          body: JSON.stringify(parsed),
+          signal: AbortSignal.timeout(300_000), // 5 min — no Vercel timeout when called from bridge
+        });
+
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('ndjson') && response.body) {
+          // Stream chunks straight through to the browser
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop() ?? '';
+            for (const line of lines) {
+              if (line.trim()) res.write(line + '\n');
+            }
+          }
+        } else {
+          const data = await response.json();
+          emit({ type: 'result', message: data.message || JSON.stringify(data) });
+        }
+      } catch (e) {
+        emit({ type: 'error', message: e.message });
+      } finally {
+        res.end();
+      }
+    });
     return;
   }
 

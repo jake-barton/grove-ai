@@ -36,11 +36,23 @@ export interface ChatMessage {
   content: string;
 }
 
+/** Fetch the first loaded model from LM Studio so we never hardcode the name */
+async function getLMStudioModel(baseURL: string): Promise<string> {
+  try {
+    const res = await fetch(`${baseURL}/models`, { signal: AbortSignal.timeout(3000) });
+    const data = await res.json() as { data?: { id: string }[] };
+    return data?.data?.[0]?.id ?? 'local-model';
+  } catch {
+    return 'local-model';
+  }
+}
+
 /** Pick the right client based on DB config (tunnel URL) or env var fallback */
 async function getActiveClient(): Promise<{ client: OpenAI; useLM: boolean; model: string }> {
   const { active, baseURL } = await resolveLMConfig();
   if (active) {
-    return { client: makeLMStudioClient(baseURL), useLM: true, model: 'openai/gpt-oss-20b' };
+    const model = await getLMStudioModel(baseURL);
+    return { client: makeLMStudioClient(baseURL), useLM: true, model };
   }
   return { client: getOpenAIClient(), useLM: false, model: 'gpt-4o' };
 }
@@ -108,7 +120,7 @@ You output ONLY valid JSON. No explanations, no markdown, no prose outside the J
   ];
 
   const makeRequest = (c: OpenAI, m: string) =>
-    c.chat.completions.create({ model: m, messages, temperature: 0.1, max_tokens: 8000 });
+    c.chat.completions.create({ model: m, messages, temperature: 0.1, max_tokens: 4000 });
 
   try {
     const response = await makeRequest(client, mdl);

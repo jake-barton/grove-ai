@@ -209,133 +209,67 @@ export async function researchCompany(companyName: string): Promise<Company> {
     emails = await findEmails(companyWebsite);
   }
 
-  // Step 10: Build comprehensive prompt for OpenAI
+  // Step 10: Build research prompt for the AI
   const researchPrompt = `Research the company "${companyName}" as a potential sponsor for Sloss.Tech, a technology conference in Birmingham, Alabama.
 
 TODAY'S DATE: ${new Date().toISOString().split('T')[0]} — only use data that reflects the company's CURRENT state in ${currentYear}.
 
-I've gathered this information:
+I've gathered this information from web searches:
 
 **Company Website & Info:**
 ${companyWebsite}
 ${websiteContent.substring(0, 500)}
 
-**LinkedIn Company Page (scraped public data):**
+**LinkedIn Company Page:**
 URL: ${linkedInCompanyUrl || 'Not found'}
-Content: ${linkedInCompanyContent.substring(0, 600) || 'Not available'}
+Content: ${linkedInCompanyContent.substring(0, 400) || 'Not available'}
 
 **LinkedIn Company Search Results:**
 ${JSON.stringify(linkedInCompanyResults.slice(0, 3), null, 2)}
 
-**LinkedIn People / Decision-Makers (primary source):**
-${JSON.stringify(linkedInPeopleResults.slice(0, 5), null, 2)}
+**LinkedIn People / Decision-Makers:**
+${JSON.stringify(linkedInPeopleResults.slice(0, 4), null, 2)}
 
-**LinkedIn People — Current Employees (${currentYear} signals, most reliable):**
-${JSON.stringify(linkedInCurrentResults.slice(0, 5), null, 2)}
+**LinkedIn People — Current Employees (${currentYear}):**
+${JSON.stringify(linkedInCurrentResults.slice(0, 4), null, 2)}
 
-**Recent News / PR — ${currentYear} (use to verify who is actively representing the company NOW):**
-${JSON.stringify(recentNewsResults.slice(0, 5), null, 2)}
+**Recent News / PR — ${currentYear}:**
+${JSON.stringify(recentNewsResults.slice(0, 4), null, 2)}
 
 **Sponsorship History (${prevYear}–${currentYear}):**
-${JSON.stringify(sponsorshipSearchResults.slice(0, 5), null, 2)}
+${JSON.stringify(sponsorshipSearchResults.slice(0, 4), null, 2)}
 
-**Decision-Makers (LinkedIn Search via Google):**
-${JSON.stringify(contactSearchResults.slice(0, 5), null, 2)}
+**Decision-Maker Search Results:**
+${JSON.stringify(contactSearchResults.slice(0, 4), null, 2)}
 
-**Community Initiatives (${prevYear}–${currentYear}):**
-${JSON.stringify(initiativesSearchResults.slice(0, 5), null, 2)}
+**Company Snippets:**
+${[...companySearchResults, ...sponsorshipSearchResults].slice(0, 8).map(r => r.snippet).filter(Boolean).join('\n')}
 
-**All Search Snippets (use these to find industry, company size, etc):**
-${[...companySearchResults, ...sponsorshipSearchResults, ...recentNewsResults].slice(0, 10).map(r => r.snippet).filter(Boolean).join('\n')}
+**Emails Found:**
+${emails.slice(0, 3).join(', ') || 'none'}
 
-**Contact Emails Found:**
-${emails.slice(0, 3).join(', ')}
+Based on ALL of the above data, output a single JSON object with these exact fields. Fill every field with real information extracted from the data — do NOT copy the field descriptions as values:
 
-🚨 CRITICAL INSTRUCTIONS 🚨
-
-STEP 0: EXTRACT INDUSTRY AND COMPANY SIZE
-- Read the "All Search Snippets" above carefully
-- Extract the industry (e.g. "Cloud Security", "Developer Tools", "Data Analytics")
-- Extract company size if mentioned (e.g. "3,000 employees", "publicly traded", "Series D")
-- If not in snippets, make a reasonable inference from what the company does
-- NEVER use "Unknown" - always provide a best answer
-
-STEP 1: EXTRACT LINKEDIN CONTACT URL — CURRENT EMPLOYEES ONLY
-- TODAY'S DATE: ${new Date().toISOString().split('T')[0]} (${currentYear})
-- Look through ALL sections in this order of reliability:
-  1. "LinkedIn People — Current Employees (${currentYear} signals)" — MOST RELIABLE
-  2. "Recent News / PR — ${currentYear}" — cross-check names mentioned here against LinkedIn results
-  3. "LinkedIn People / Decision-Makers"
-  4. "Decision-Makers (LinkedIn Search via Google)"
-- ⚠️ EMPLOYMENT VERIFICATION — CHECK ALL OF THESE:
-  1. Does the snippet/title show their CURRENT title at ${companyName}? (present tense: "is", "leads", "serves as")
-  2. Does the snippet contain a YEAR? Years before ${prevYear} are a RED FLAG — the data may be stale.
-  3. Does "Recent News / PR" confirm this person is still speaking for / representing ${companyName} in ${currentYear}? If yes, strong signal they are current.
-  4. Does the snippet show them at a DIFFERENT company? REJECT immediately.
-  5. Does the snippet say "Former", "Ex-", "previously", "left", "now at", "joined [other company]"? REJECT immediately.
-- ⚠️ REJECT anyone whose title/snippet says they work at a DIFFERENT company
-- ⚠️ REJECT anyone described as "Former", "Ex-", "previously at", or who has left ${companyName}
-- ⚠️ REJECT anyone whose snippet only mentions ${companyName} in passing (e.g. "previously worked at ${companyName}")
-- ⚠️ If ANY doubt about whether the person is still at ${companyName}, use "Not found" — DO NOT GUESS
-- Pick the person who is most senior in Marketing, Sponsorships, or Partnerships AT ${companyName} RIGHT NOW
-- Good titles: CMO at ${companyName}, VP Marketing at ${companyName}, Head of Sponsorships at ${companyName}
-- Copy the EXACT "link" value from the JSON — do not modify it
-- LinkedIn profile URLs look like: linkedin.com/in/firstname-lastname OR linkedin.com/in/firstname-lastname-12345
-- If no verified CURRENT employee found, use "Not found" — it is BETTER to say "Not found" than to provide a stale contact
-
-STEP 2: EXTRACT REAL CONTACT NAME
-- From the same entry you picked in Step 1, look at the "title" field
-- Names appear like: "Debbie Brown - Global Head of Marketing @ ${companyName} | LinkedIn"
-- Extract ONLY the name part before the dash or pipe
-- ⚠️ Cross-check: does this name appear in "Recent News / PR — ${currentYear}"? If yes, strong confirmation they are current.
-- ⚠️ If the title shows the person at a DIFFERENT company, use "Not found" for both name and LinkedIn
-- ⚠️ If you used "Not found" in Step 1, use "Not found" here too
-- NEVER use: "John Doe", "Jane Doe", "John Smith", or any placeholder name
-- If no real name found, use "Not found"
-
-STEP 3: VERIFY COMPANY LINKEDIN
-- Look through "LinkedIn Company Search Results" section
-- Company LinkedIn URLs look like: "linkedin.com/company/amazon-web-services"
-- Copy the EXACT first result "link" value that contains "linkedin.com/company/"
-- If not found, use "Not found"
-
-STEP 4: VERIFY SPONSORSHIP DATA
-- Look ONLY in "Sponsorship History (${prevYear}–${currentYear})" section
-- Only count events from ${prevYear} or ${currentYear} — older events are low signal
-- Extract specific event names: "TechCrunch Disrupt 2025", "AWS re:Invent 2025", "SXSW 2026"
-- If no recent events mentioned, return empty array []
-
-STRICT RULES:
-❌ DO NOT create or invent URLs — only copy exact "link" values from search results
-❌ DO NOT use generic placeholder names
-❌ DO NOT invent events — only use events explicitly mentioned in search results
-❌ DO NOT save a contact if you are not CERTAIN they currently work at ${companyName} in ${currentYear}
-✅ DO cross-reference LinkedIn results with Recent News to confirm recency
-✅ DO copy URLs exactly character-for-character from the JSON
-✅ DO prefer "Not found" over a potentially stale contact — accuracy matters more than completeness
-✅ DO use "Not found" when data genuinely doesn't exist
-
-Format as JSON:
 {
   "company_name": "${companyName}",
-  "industry": "string (from search results)",
-  "company_size": "string (from search results or 'Unknown')",
-  "website": "${companyWebsite}",
-  "linkedin_company": "string (EXACT URL from search results or 'Not found')",
-  "contact_name": "string (EXACT name from search results or 'Not found')",
-  "contact_position": "string (from search results)",
-  "contact_linkedin": "string (EXACT LinkedIn URL with numbers from search results or 'Not found')",
-  "contact_info": "string (email if found or 'Not found')",
-  "email_format": "string (pattern or 'Not available')",
-  "previously_sponsored": ["array of specific events mentioned in search results - empty [] if none"],
-  "what_they_sponsored": "string (specific examples from search results or 'No verified sponsorships found')",
-  "why_good_fit": "string — exactly 3 bullet points each starting with '• ', covering: (1) technology/product alignment with Sloss.Tech, (2) community/developer investment signals from search results, (3) sponsorship history or likelihood. ONLY facts from search results — no invented claims.",
-  "sponsorship_likelihood_score": number (1-10 based on evidence found),
-  "relevant_notes": "string (key insights from search results)",
-  "relevant_links": ["array of EXACT URLs from search results only - max 3"]
+  "industry": "the actual industry of ${companyName} based on what they do (e.g. Cloud Computing, Cybersecurity, Financial Technology)",
+  "company_size": "actual size from snippets (e.g. 200000+ employees, Series B startup, publicly traded) or estimate from context",
+  "website": "${companyWebsite || 'Not found'}",
+  "linkedin_company": "copy the exact URL from LinkedIn Company Search Results above, or Not found",
+  "contact_name": "copy the exact person's name from LinkedIn People results if they currently work at ${companyName} in marketing/partnerships, or Not found",
+  "contact_position": "their exact job title at ${companyName}, or Not found",
+  "contact_linkedin": "copy the exact linkedin.com/in/... URL from search results, or Not found",
+  "contact_info": "${emails[0] || 'Not found'}",
+  "email_format": "email pattern like firstname@company.com if determinable, or Not available",
+  "previously_sponsored": ["list specific real events ${companyName} has sponsored from Sponsorship History, empty array if none found"],
+  "what_they_sponsored": "describe what ${companyName} has specifically sponsored, or No verified sponsorships found",
+  "why_good_fit": "• Write a real reason why ${companyName}'s products/services align with a tech conference audience\n• Write a real reason about their developer community investment or tech focus\n• Write a real reason about their sponsorship track record or company scale",
+  "sponsorship_likelihood_score": 7,
+  "relevant_notes": "Write 1-2 sentences of useful insight about ${companyName} as a Sloss.Tech sponsor prospect",
+  "relevant_links": ["up to 3 exact URLs from the search data above"]
 }
 
-Respond ONLY with valid JSON. No explanations, no markdown, just pure JSON.`;
+IMPORTANT: Output ONLY the JSON object. No markdown. No explanation. No code fences. Start your response with { and end with }`;
 
   const aiResponse = await generateWithOpenAI(researchPrompt);
 

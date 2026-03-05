@@ -45,3 +45,4 @@ companies.json
 next-env.d.ts
 
 /lib/generated/prisma
+.env*.local

@@ -9,19 +9,19 @@ const useLMStudio = process.env.LMSTUDIO_MODE === 'true' || process.env.OPENAI_A
 // Allow overriding the LM Studio base URL via env var (useful when running on a different machine/port)
 const lmStudioBaseURL = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
 
-// Clients — one for LM Studio, one fallback to real OpenAI
-const lmStudioClient = new OpenAI({
-  apiKey: 'lm-studio',
-  baseURL: lmStudioBaseURL,
-});
+// Lazy-initialise clients so the module can be imported at build time without
+// throwing "Missing credentials" (env vars aren't available during next build's
+// static-analysis phase).
+function getLMStudioClient() {
+  return new OpenAI({ apiKey: 'lm-studio', baseURL: lmStudioBaseURL });
+}
 
-const openaiClient = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: 'https://api.openai.com/v1',
-});
-
-// Pick the active client
-const openai = useLMStudio ? lmStudioClient : openaiClient;
+function getOpenAIClient() {
+  return new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY || 'placeholder-set-at-runtime',
+    baseURL: 'https://api.openai.com/v1',
+  });
+}
 
 // Use the loaded LM Studio model, or gpt-4o for real OpenAI
 const DEFAULT_CHAT_MODEL = useLMStudio ? 'openai/gpt-oss-20b' : 'gpt-4o';
@@ -40,8 +40,9 @@ export async function chatWithOpenAI(
   messages: ChatMessage[],
   model: string = DEFAULT_CHAT_MODEL
 ): Promise<string> {
+  const client = useLMStudio ? getLMStudioClient() : getOpenAIClient();
   try {
-    const response = await openai.chat.completions.create({
+    const response = await client.chat.completions.create({
       model,
       messages,
       temperature: 0.2,
@@ -54,7 +55,7 @@ export async function chatWithOpenAI(
     if (useLMStudio) {
       console.warn('LM Studio unreachable — falling back to OpenAI gpt-4o');
       try {
-        const fallback = await openaiClient.chat.completions.create({
+        const fallback = await getOpenAIClient().chat.completions.create({
           model: 'gpt-4o',
           messages,
           temperature: 0.2,
@@ -109,15 +110,16 @@ You output ONLY valid JSON. No explanations, no markdown, no prose outside the J
       max_tokens: 8000,
     });
 
+  const client = useLMStudio ? getLMStudioClient() : getOpenAIClient();
   try {
-    const response = await makeRequest(openai, model);
+    const response = await makeRequest(client, model);
     return response.choices[0]?.message?.content || '';
   } catch (error: unknown) {
     // Fall back to real OpenAI if LM Studio is unreachable
     if (useLMStudio) {
       console.warn('LM Studio unreachable — falling back to OpenAI gpt-4o for JSON generation');
       try {
-        const fallback = await makeRequest(openaiClient, 'gpt-4o');
+        const fallback = await makeRequest(getOpenAIClient(), 'gpt-4o');
         return fallback.choices[0]?.message?.content || '';
       } catch (fallbackErr) {
         const msg = fallbackErr instanceof Error ? fallbackErr.message : JSON.stringify(fallbackErr);
@@ -138,8 +140,9 @@ export async function generateWithSystemPrompt(
   userPrompt: string,
   model: string = DEFAULT_JSON_MODEL
 ): Promise<string> {
+  const client = useLMStudio ? getLMStudioClient() : getOpenAIClient();
   try {
-    const response = await openai.chat.completions.create({
+    const response = await client.chat.completions.create({
       model,
       messages: [
         { role: 'system', content: systemPrompt },

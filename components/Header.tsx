@@ -3,6 +3,7 @@
 
 import { ExternalLink, Database } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import LMStudioModal from './LMStudioModal';
 
 interface AIStatus {
   provider: string;
@@ -18,24 +19,22 @@ interface HeaderProps {
 
 export default function Header({ onExport, companyCount }: HeaderProps) {
   const [aiStatus, setAiStatus] = useState<AIStatus | null>(null);
+  const [showLMModal, setShowLMModal] = useState(false);
 
-  useEffect(() => {
+  function fetchStatus() {
     fetch('/api/ai-status')
       .then(r => r.json())
       .then(setAiStatus)
       .catch(() => setAiStatus({ provider: 'Unknown', model: null, connected: false, url: '' }));
+  }
 
-    // Re-poll every 30s so the indicator updates if LM Studio goes down/up
-    const interval = setInterval(() => {
-      fetch('/api/ai-status')
-        .then(r => r.json())
-        .then(setAiStatus)
-        .catch(() => {});
-    }, 30_000);
-
+  useEffect(() => {
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 30_000);
     return () => clearInterval(interval);
   }, []);
   return (
+    <>
     <header
       className="scan-line border-b px-6 py-0 shrink-0 relative overflow-hidden"
       style={{
@@ -92,9 +91,10 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
         {/* ── Right: AI status + counter + actions ── */}
         <div className="flex items-center gap-3">
 
-          {/* AI connection status pill */}
-          <div
-            title={aiStatus ? `${aiStatus.provider} · ${aiStatus.url}` : 'Checking AI connection…'}
+          {/* AI connection status pill — click to open LM Studio connect modal */}
+          <button
+            onClick={() => setShowLMModal(true)}
+            title={aiStatus ? `${aiStatus.provider} · ${aiStatus.url}\nClick to configure local AI` : 'Click to configure AI connection'}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -110,6 +110,7 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
               whiteSpace: 'nowrap',
               userSelect: 'none',
               transition: 'all 0.3s ease',
+              cursor: 'pointer',
             }}
           >
             {/* Status dot */}
@@ -126,7 +127,7 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
               : aiStatus.connected
                 ? `${aiStatus.provider} · ${aiStatus.model ?? 'connected'}`
                 : `${aiStatus.provider} · disconnected`}
-          </div>
+          </button>
           <div className="text-right pr-3 border-r" style={{ borderColor: 'var(--border)' }}>
             <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
               Companies tracked
@@ -178,5 +179,13 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
         </div>
       </div>
     </header>
+
+    <LMStudioModal
+      isOpen={showLMModal}
+      onClose={() => setShowLMModal(false)}
+      currentURL={aiStatus?.provider === 'LM Studio' ? (aiStatus.url ?? null) : null}
+      onStatusChange={() => { fetchStatus(); }}
+    />
+    </>
   );
 }

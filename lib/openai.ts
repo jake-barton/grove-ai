@@ -1,19 +1,27 @@
 // OpenAI integration for chat
 // Works with OpenAI API OR LM Studio local server (OpenAI-compatible)
 import OpenAI from 'openai';
+import { getLMStudioURL, getLMStudioActive } from './runtime-config';
 
-// LM Studio runs on localhost:1234 with OpenAI-compatible API
-// If OPENAI_API_KEY is set to "lm-studio" or LMSTUDIO_MODE is true, use local LM Studio
-const useLMStudio = process.env.LMSTUDIO_MODE === 'true' || process.env.OPENAI_API_KEY === 'lm-studio';
+// Static env-based LM Studio mode (local dev)
+const envLMStudio = process.env.LMSTUDIO_MODE === 'true' || process.env.OPENAI_API_KEY === 'lm-studio';
+const envLMStudioBaseURL = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
 
-// Allow overriding the LM Studio base URL via env var (useful when running on a different machine/port)
-const lmStudioBaseURL = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
+// Resolve the active LM Studio URL — DB takes priority over env var
+// (DB is set by the tunnel script when ngrok connects)
+async function resolveLMConfig(): Promise<{ active: boolean; baseURL: string }> {
+  try {
+    const [dbActive, dbURL] = await Promise.all([getLMStudioActive(), getLMStudioURL()]);
+    if (dbActive && dbURL) return { active: true, baseURL: dbURL };
+  } catch {
+    // DB unavailable — fall through to env var
+  }
+  return { active: envLMStudio, baseURL: envLMStudioBaseURL };
+}
 
-// Lazy-initialise clients so the module can be imported at build time without
-// throwing "Missing credentials" (env vars aren't available during next build's
-// static-analysis phase).
-function getLMStudioClient() {
-  return new OpenAI({ apiKey: 'lm-studio', baseURL: lmStudioBaseURL });
+// Lazy client factories
+function makeLMStudioClient(baseURL: string) {
+  return new OpenAI({ apiKey: 'lm-studio', baseURL });
 }
 
 function getOpenAIClient() {
@@ -23,64 +31,64 @@ function getOpenAIClient() {
   });
 }
 
-// Use the loaded LM Studio model, or gpt-4o for real OpenAI
-const DEFAULT_CHAT_MODEL = useLMStudio ? 'openai/gpt-oss-20b' : 'gpt-4o';
-const DEFAULT_JSON_MODEL = useLMStudio ? 'openai/gpt-oss-20b' : 'gpt-4o';
-
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
+/** Pick the right client based on DB config (tunnel URL) or env var fallback */
+async function getActiveClient(): Promise<{ client: OpenAI; useLM: boolean; model: string }> {
+  const { active, baseURL } = await resolveLMConfig();
+  if (active) {
+    return { client: makeLMStudioClient(baseURL), useLM: true, model: 'openai/gpt-oss-20b' };
+  }
+  return { client: getOpenAIClient(), useLM: false, model: 'gpt-4o' };
+}
+
 /**
- * Chat with OpenAI GPT-4
- * Much smarter than local Ollama models
+ * Chat with Grove's AI
  */
 export async function chatWithOpenAI(
   messages: ChatMessage[],
-  model: string = DEFAULT_CHAT_MODEL
+  model?: string
 ): Promise<string> {
-  const client = useLMStudio ? getLMStudioClient() : getOpenAIClient();
+  const { client, useLM, model: defaultModel } = await getActiveClient();
+  const mdl = model ?? defaultModel;
   try {
     const response = await client.chat.completions.create({
-      model,
+      model: mdl,
       messages,
       temperature: 0.2,
       max_tokens: 2000,
     });
-
     return response.choices[0]?.message?.content || 'No response';
   } catch (error: unknown) {
-    // If LM Studio was selected but is unreachable, fall back to real OpenAI
-    if (useLMStudio) {
+    if (useLM) {
       console.warn('LM Studio unreachable — falling back to OpenAI gpt-4o');
       try {
         const fallback = await getOpenAIClient().chat.completions.create({
-          model: 'gpt-4o',
-          messages,
-          temperature: 0.2,
-          max_tokens: 2000,
+          model: 'gpt-4o', messages, temperature: 0.2, max_tokens: 2000,
         });
         return fallback.choices[0]?.message?.content || 'No response';
-      } catch (fallbackErr) {
-        const msg = fallbackErr instanceof Error ? fallbackErr.message : JSON.stringify(fallbackErr);
-        throw new Error(`OpenAI fallback failed: ${msg}`);
+      } catch (fe) {
+        throw new Error(`OpenAI fallback failed: ${fe instanceof Error ? fe.message : fe}`);
       }
     }
     const errMsg = error instanceof Error ? error.message : JSON.stringify(error);
-    console.error('OpenAI API error:', errMsg);
     throw new Error(`OpenAI request failed: ${errMsg}`);
   }
 }
 
 /**
- * Generate structured JSON response from OpenAI
- * Used for company research
+ * Generate structured JSON response — used for company research
  */
 export async function generateWithOpenAI(
   prompt: string,
-  model: string = DEFAULT_JSON_MODEL
+  model?: string
 ): Promise<string> {
+  const { client, useLM, model: defaultModel } = await getActiveClient();
+  const mdl = model ?? defaultModel;
+
   const messages = [
     {
       role: 'system' as const,
@@ -96,38 +104,26 @@ export async function generateWithOpenAI(
 
 You output ONLY valid JSON. No explanations, no markdown, no prose outside the JSON object.`,
     },
-    {
-      role: 'user' as const,
-      content: prompt,
-    },
+    { role: 'user' as const, content: prompt },
   ];
 
-  const makeRequest = async (client: OpenAI, mdl: string) =>
-    client.chat.completions.create({
-      model: mdl,
-      messages,
-      temperature: 0.1,
-      max_tokens: 8000,
-    });
+  const makeRequest = (c: OpenAI, m: string) =>
+    c.chat.completions.create({ model: m, messages, temperature: 0.1, max_tokens: 8000 });
 
-  const client = useLMStudio ? getLMStudioClient() : getOpenAIClient();
   try {
-    const response = await makeRequest(client, model);
+    const response = await makeRequest(client, mdl);
     return response.choices[0]?.message?.content || '';
   } catch (error: unknown) {
-    // Fall back to real OpenAI if LM Studio is unreachable
-    if (useLMStudio) {
+    if (useLM) {
       console.warn('LM Studio unreachable — falling back to OpenAI gpt-4o for JSON generation');
       try {
         const fallback = await makeRequest(getOpenAIClient(), 'gpt-4o');
         return fallback.choices[0]?.message?.content || '';
-      } catch (fallbackErr) {
-        const msg = fallbackErr instanceof Error ? fallbackErr.message : JSON.stringify(fallbackErr);
-        throw new Error(`OpenAI fallback failed: ${msg}`);
+      } catch (fe) {
+        throw new Error(`OpenAI fallback failed: ${fe instanceof Error ? fe.message : fe}`);
       }
     }
     const errMsg = error instanceof Error ? error.message : JSON.stringify(error);
-    console.error('OpenAI generation error:', errMsg);
     throw new Error(`OpenAI generation failed: ${errMsg}`);
   }
 }
@@ -138,12 +134,13 @@ You output ONLY valid JSON. No explanations, no markdown, no prose outside the J
 export async function generateWithSystemPrompt(
   systemPrompt: string,
   userPrompt: string,
-  model: string = DEFAULT_JSON_MODEL
+  model?: string
 ): Promise<string> {
-  const client = useLMStudio ? getLMStudioClient() : getOpenAIClient();
+  const { client, model: defaultModel } = await getActiveClient();
+  const mdl = model ?? defaultModel;
   try {
     const response = await client.chat.completions.create({
-      model,
+      model: mdl,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
@@ -154,7 +151,6 @@ export async function generateWithSystemPrompt(
     return response.choices[0]?.message?.content || '';
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : JSON.stringify(error);
-    console.error('OpenAI generation error:', errMsg);
     throw new Error(`OpenAI generation failed: ${errMsg}`);
   }
 }

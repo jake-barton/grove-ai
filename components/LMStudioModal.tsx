@@ -45,29 +45,74 @@ export default function LMStudioModal({ isOpen, onClose, currentURL, onStatusCha
 
   if (!isOpen) return null;
 
+  // Detect if a URL is a local/private network address (unreachable from Vercel)
+  function isLocalURL(rawUrl: string): boolean {
+    try {
+      const host = new URL(rawUrl.includes('://') ? rawUrl : `http://${rawUrl}`).hostname;
+      return (
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        /^10\./.test(host) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+        /^192\.168\./.test(host)
+      );
+    } catch { return false; }
+  }
+
   async function handleConnect() {
     if (!url.trim()) return;
     setStatus('testing');
     setMessage('');
+
+    // Normalise URL
+    let baseURL = url.trim().replace(/\/+$/, '');
+    if (!baseURL.endsWith('/v1')) baseURL = baseURL + '/v1';
+
+    // Step 1: Test reachability FROM THE BROWSER (not the server)
+    let detectedModel = '';
+    try {
+      const test = await fetch(`${baseURL}/models`, { signal: AbortSignal.timeout(8000) });
+      if (!test.ok) throw new Error(`HTTP ${test.status}`);
+      const data = await test.json();
+      const models: { id: string }[] = data?.data ?? [];
+      detectedModel = models[0]?.id ?? '';
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatus('error');
+      setMessage(`Can't reach LM Studio at ${baseURL} — ${msg}`);
+      return;
+    }
+
+    // Step 2: Check if it's a local IP — Vercel can't reach it for AI calls
+    if (isLocalURL(url.trim())) {
+      setStatus('error');
+      setMessage(
+        `LM Studio is running but the URL ${url.trim()} is only reachable on your local network — the cloud app can't use it. ` +
+        `Enable the LM Studio Cloud Tunnel instead (see instructions below).`
+      );
+      return;
+    }
+
+    // Step 3: Save to DB via our API
     try {
       const res = await fetch('/api/lmstudio', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'connect', url: url.trim() }),
+        body: JSON.stringify({ action: 'connect', url: url.trim(), model: detectedModel }),
       });
       const data = await res.json();
       if (!res.ok) {
         setStatus('error');
-        setMessage(data.error ?? 'Connection failed');
+        setMessage(data.error ?? 'Failed to save connection');
       } else {
         setStatus('success');
-        setModel(data.model ?? '');
+        setModel(detectedModel);
         setMessage(`Connected! Grove is now using your local AI.`);
         onStatusChange();
       }
     } catch {
       setStatus('error');
-      setMessage('Network error — check your URL and try again.');
+      setMessage('Network error — could not save connection.');
     }
   }
 
@@ -173,10 +218,16 @@ export default function LMStudioModal({ isOpen, onClose, currentURL, onStatusCha
           </p>
           <ol style={{ margin: 0, padding: '0 0 0 18px', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
             <li>Open <strong style={{ color: 'var(--text-primary)' }}>LM Studio</strong> and load any model</li>
-            <li>Go to <strong style={{ color: 'var(--text-primary)' }}>Local Server</strong> (left sidebar)</li>
+            <li>Go to <strong style={{ color: 'var(--text-primary)' }}>Developer → Local Server</strong> (left sidebar)</li>
             <li>Click <strong style={{ color: 'var(--text-primary)' }}>Start Server</strong></li>
-            <li>Enable <strong style={{ color: 'var(--text-primary)' }}>LM Studio Cloud Tunnel</strong> — copy the URL it gives you</li>
+            <li>Click <strong style={{ color: 'var(--text-primary)' }}>Server Settings</strong> → enable <strong style={{ color: 'var(--tb-orange)' }}>LM Studio Cloud Tunnel</strong></li>
+            <li>Copy the <strong style={{ color: 'var(--text-primary)' }}>https://…lmstudio.ai</strong> URL it shows you</li>
           </ol>
+          <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 6, background: 'rgba(242,101,34,0.08)', border: '1px solid rgba(242,101,34,0.2)' }}>
+            <p style={{ margin: 0, fontSize: 11, color: 'rgb(253,186,116)' }}>
+              ⚠️ <strong>Must use the Cloud Tunnel URL</strong> — local IPs like <code style={{ background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 3 }}>192.168.x.x</code> or <code style={{ background: 'rgba(0,0,0,0.2)', padding: '1px 4px', borderRadius: 3 }}>localhost</code> won&apos;t work from the cloud app.
+            </p>
+          </div>
           <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--text-muted)' }}>
             The URL looks like: <code style={{ color: 'var(--tb-blue)', background: 'rgba(108,173,223,0.1)', padding: '1px 5px', borderRadius: 4 }}>https://abc123.lmstudio.ai</code>
           </p>

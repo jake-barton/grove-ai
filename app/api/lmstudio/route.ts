@@ -18,7 +18,7 @@ export async function GET() {
 /** POST — connect to an LM Studio URL or disconnect */
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
-  const { action, url } = body;
+  const { action, url, model } = body;
 
   if (action === 'connect') {
     if (!url || typeof url !== 'string') {
@@ -29,28 +29,11 @@ export async function POST(req: NextRequest) {
     let baseURL = url.trim().replace(/\/+$/, '');
     if (!baseURL.endsWith('/v1')) baseURL = baseURL + '/v1';
 
-    // Test that the URL is actually reachable before saving
-    try {
-      const test = await fetch(`${baseURL}/models`, {
-        signal: AbortSignal.timeout(8000),
-      });
-      if (!test.ok) throw new Error(`HTTP ${test.status}`);
-      const data = await test.json();
+    // Save to DB — reachability was already tested by the browser
+    await setLMStudioURL(baseURL);
+    await setLMStudioActive(true);
 
-      await setLMStudioURL(baseURL);
-      await setLMStudioActive(true);
-
-      const models: { id: string }[] = data?.data ?? [];
-      const modelId = models[0]?.id ?? 'unknown';
-
-      return NextResponse.json({ ok: true, model: modelId, url: baseURL });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return NextResponse.json(
-        { error: `Could not reach LM Studio at ${baseURL} — ${msg}` },
-        { status: 400 }
-      );
-    }
+    return NextResponse.json({ ok: true, model: model ?? 'unknown', url: baseURL });
   }
 
   if (action === 'disconnect') {

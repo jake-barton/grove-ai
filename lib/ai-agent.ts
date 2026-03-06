@@ -927,6 +927,189 @@ Respond ONLY with valid JSON. No explanations, no markdown, just pure JSON.`;
   };
 }
 
+// ── Deep LinkedIn contact search — dedicated contact-only research ──────────────
+// Used when we already have a company in the DB but need to find/update its contact.
+// Does 8 targeted searches specifically for current decision-makers, then uses AI
+// to pick the best one, then PATCHes the company record directly.
+export async function findContactForCompany(
+  companyName: string,
+  existingCompanyId?: string,
+  originUrl?: string
+): Promise<{
+  contact_name: string | null;
+  contact_position: string | null;
+  contact_linkedin: string | null;
+  contact_info: string | null;
+  confidence: string;
+  source: string;
+}> {
+  const currentYear = new Date().getFullYear();
+  console.log(`\n🎯 Deep contact search for "${companyName}"…`);
+
+  // Fire 8 highly targeted searches in parallel
+  const [
+    s1, s2, s3, s4, s5, s6, s7, s8
+  ] = await Promise.all([
+    // LinkedIn profiles — CMO / VP Marketing at this company right now
+    searchWeb(`site:linkedin.com/in "${companyName}" (CMO OR "Chief Marketing Officer" OR "VP of Marketing" OR "VP Marketing") -former -"ex-" -left -departed`),
+    // LinkedIn profiles — Partnerships / Sponsorships
+    searchWeb(`site:linkedin.com/in "${companyName}" ("Head of Partnerships" OR "Director of Partnerships" OR "Head of Sponsorships" OR "Sponsorship Manager" OR "Community Partnerships") -former -"ex-"`),
+    // LinkedIn profiles — current year signal
+    searchWeb(`site:linkedin.com/in "${companyName}" (marketing OR partnerships OR sponsorships) "${currentYear}" -former -"ex-"`),
+    // Named in press — people quoted or credited for the company in news
+    searchWeb(`"${companyName}" ("CMO" OR "Chief Marketing Officer" OR "VP Marketing" OR "Head of Partnerships") "${currentYear}" said OR announced OR commented -site:linkedin.com`),
+    // Conference/event sponsorship contacts — often named in event pages
+    searchWeb(`"${companyName}" sponsorship contact OR "sponsorship team" OR "partnerships team" "${currentYear}"`),
+    // Apollo / ZoomInfo / Clearbit leaks (public data aggregators often index company contacts)
+    searchWeb(`"${companyName}" (CMO OR "VP Marketing" OR "Head of Partnerships") email site:apollo.io OR site:rocketreach.co OR site:contactout.com OR site:signalhire.com`),
+    // Official company about/team pages
+    searchWeb(`"${companyName}" "head of" OR "director of" OR "vice president" marketing OR partnerships site:${companyName.toLowerCase().replace(/[^a-z0-9]/g, '')}.com OR "${companyName.toLowerCase()}.com"`),
+    // Twitter/X — often the fastest way to find who speaks for a company publicly
+    searchWeb(`site:twitter.com OR site:x.com "${companyName}" (CMO OR "VP Marketing" OR "Head of Partnerships" OR "Director of Sponsorships") "${currentYear}"`),
+  ]);
+
+  // Aggregate all unique results
+  const allResults = [...s1, ...s2, ...s3, ...s4, ...s5, ...s6, ...s7, ...s8];
+  const allUrls = new Set(allResults.map(r => r.link?.toLowerCase()).filter(Boolean));
+
+  // Hunter.io domain search — if configured, this gives us verified emails + LinkedIn
+  let hunterText = '';
+  const hunterResults: HunterContact[] = [];
+  try {
+    // Try to derive domain from company name
+    const domainGuess = companyName.toLowerCase().replace(/[^a-z0-9]/g, '') + '.com';
+    const hc = await hunterDomainSearch(domainGuess);
+    hunterResults.push(...hc);
+    if (hc.length > 0) {
+      hunterText = hc
+        .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+        .slice(0, 5)
+        .map(c =>
+          `• ${c.first_name} ${c.last_name}` +
+          (c.position ? ` — ${c.position}` : '') +
+          ` | Email: ${c.value}` +
+          (c.linkedin ? ` | LinkedIn: ${c.linkedin}` : '') +
+          (c.confidence ? ` | Confidence: ${c.confidence}%` : '')
+        )
+        .join('\n');
+    }
+  } catch { /* ignore */ }
+
+  // Build AI prompt with all gathered data
+  const prompt = `You are finding the BEST sponsorship/marketing contact at "${companyName}" for a tech conference outreach.
+
+TODAY: ${new Date().toISOString().split('T')[0]} — only ${currentYear} data.
+
+${hunterText ? `## HUNTER.IO VERIFIED CONTACTS (highest trust — real emails):\n${hunterText}\n` : ''}
+
+## LINKEDIN SEARCH RESULTS (CMO / VP Marketing):
+${JSON.stringify(s1.slice(0, 4), null, 2)}
+
+## LINKEDIN SEARCH RESULTS (Partnerships / Sponsorships):
+${JSON.stringify(s2.slice(0, 4), null, 2)}
+
+## LINKEDIN CURRENT (${currentYear} signals):
+${JSON.stringify(s3.slice(0, 4), null, 2)}
+
+## PRESS / NEWS — NAMED EXECUTIVES:
+${JSON.stringify(s4.slice(0, 5), null, 2)}
+
+## SPONSORSHIP CONTACT PAGES:
+${JSON.stringify(s5.slice(0, 3), null, 2)}
+
+## DATA AGGREGATORS (Apollo/RocketReach):
+${JSON.stringify(s6.slice(0, 3), null, 2)}
+
+## COMPANY TEAM/ABOUT PAGES:
+${JSON.stringify(s7.slice(0, 3), null, 2)}
+
+## SOCIAL MEDIA SIGNALS:
+${JSON.stringify(s8.slice(0, 3), null, 2)}
+
+INSTRUCTIONS:
+1. Pick the SINGLE best contact for sponsorship outreach at "${companyName}"
+   - Best roles IN ORDER: Head of Sponsorships > Director of Partnerships > CMO > VP Marketing > Community Lead > CEO
+   - Must be CURRENTLY at ${companyName} — reject anyone with "former", "ex-", "left", "now at", "joined [other company]"
+2. Extract their LinkedIn URL — must be a real linkedin.com/in/... URL from the search results above
+3. Extract their email — use Hunter.io email if available, otherwise "Not found"
+4. Determine your confidence: "high" (Hunter verified or leadership page), "medium" (LinkedIn snippet clear), "low" (inferred)
+5. Note your source: "hunter", "linkedin", "press", "team_page", "aggregator"
+
+Return ONLY this JSON (no markdown, no explanation):
+{
+  "contact_name": "Full Name or null",
+  "contact_position": "Exact title or null",
+  "contact_linkedin": "https://linkedin.com/in/... URL (must appear in search results above) or null",
+  "contact_info": "email@company.com or null",
+  "confidence": "high|medium|low",
+  "source": "hunter|linkedin|press|team_page|aggregator|not_found",
+  "reasoning": "1 sentence explaining why you chose this person"
+}
+
+If NO credible current contact found, return:
+{ "contact_name": null, "contact_position": null, "contact_linkedin": null, "contact_info": null, "confidence": "low", "source": "not_found", "reasoning": "No verified current contact found" }`;
+
+  let result: {
+    contact_name: string | null;
+    contact_position: string | null;
+    contact_linkedin: string | null;
+    contact_info: string | null;
+    confidence: string;
+    source: string;
+    reasoning?: string;
+  } = {
+    contact_name: null,
+    contact_position: null,
+    contact_linkedin: null,
+    contact_info: null,
+    confidence: 'low',
+    source: 'not_found',
+  };
+
+  try {
+    const aiRaw = await generateWithOpenAI(prompt);
+    const jsonMatch = aiRaw.replace(/```json\n?/g, '').replace(/```\n?/g, '').match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      // Validate LinkedIn URL — must appear in actual search results
+      if (parsed.contact_linkedin) {
+        const liUrl = validateLinkedInUrl(parsed.contact_linkedin);
+        const fromHunter = hunterResults.some(h => h.linkedin?.toLowerCase().includes(parsed.contact_linkedin?.toLowerCase()));
+        const foundInSearch = liUrl && (fromHunter || [...allUrls].some(u => u && u.includes(liUrl.toLowerCase())));
+        parsed.contact_linkedin = foundInSearch ? liUrl : null;
+        if (!foundInSearch) console.warn(`⚠️ Contact LinkedIn not in search results — cleared`);
+      }
+      // Validate name
+      parsed.contact_name = validateContactName(parsed.contact_name) || null;
+      result = parsed;
+      console.log(`✅ Contact found for ${companyName}: ${result.contact_name} (${result.confidence}, ${result.source})`);
+      if (result.reasoning) console.log(`   Reasoning: ${result.reasoning}`);
+    }
+  } catch (e) {
+    console.error(`AI parse error for contact search:`, e);
+  }
+
+  // If company ID + origin provided, PATCH the record directly
+  if (existingCompanyId && originUrl && result.contact_name) {
+    try {
+      const patchBody: Record<string, string | null> = {
+        contact_name: result.contact_name,
+        contact_position: result.contact_position,
+        contact_linkedin: result.contact_linkedin,
+        contact_info: result.contact_info,
+      };
+      await axios.patch(`${originUrl}/api/companies/${existingCompanyId}`, patchBody, {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      console.log(`💾 Patched company ${existingCompanyId} with new contact`);
+    } catch (e) {
+      console.error(`Failed to PATCH company ${existingCompanyId}:`, e);
+    }
+  }
+
+  return result;
+}
+
 // Batch research multiple companies
 export async function batchResearchCompanies(
   companyNames: string[],

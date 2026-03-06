@@ -1,11 +1,8 @@
 // API Route: Chat with AI assistant — streaming research updates
 import { NextRequest, NextResponse } from 'next/server';
 import { chatWithOpenAI, SYSTEM_PROMPT, ChatMessage } from '@/lib/openai';
-import { researchCompany, batchResearchCompanies } from '@/lib/ai-agent';
+import { researchCompany, batchResearchCompanies, findContactForCompany } from '@/lib/ai-agent';
 import { handleNaturalLanguageFormat } from '@/lib/sheets-formatter';
-
-// Allow this function up to 300s — research takes time (web search + scraping + AI)
-export const maxDuration = 300;
 
 // ── Streaming helper ────────────────────────────────────────────────────────
 type StreamChunk =
@@ -46,11 +43,8 @@ async function runResearch(
   companies: string[],
   origin: string,
   emit: (c: StreamChunk) => void,
-  prefix = '',
-  isBridge = false
+  prefix = ''
 ): Promise<{ results: string; savedCompanies: { company_name: string }[]; failCount: number }> {
-  // When running via the local bridge, always save to local Next.js — never Vercel
-  if (isBridge) origin = 'http://localhost:3742';
   let results = prefix;
   let failCount = 0;
   const savedCompanies: { company_name: string }[] = [];
@@ -93,17 +87,11 @@ async function runResearch(
         });
         if (saveResponse.ok) {
           savedCompanies.push(companyData);
-          emit({ type: 'step', text: `Saved ${companyData.company_name} to pipeline`, icon: '💾', sub: `Score: ${companyData.sponsorship_likelihood_score}/10 · ${companyData.industry || 'Unknown industry'}` });
+          emit({ type: 'step', text: `Saved ${companyData.company_name} to pipeline`, icon: '💾', sub: `Score: ${companyData.sponsorship_likelihood_score}/10` });
         } else {
-          const errBody = await saveResponse.text().catch(() => 'no body');
-          console.error(`❌ Save failed for ${companyData.company_name}: ${saveResponse.status} — ${errBody}`);
-          emit({ type: 'step', text: `Save failed for ${companyData.company_name}`, icon: '❌', sub: `${saveResponse.status}: ${errBody.slice(0, 80)}` });
           savedCompanies.push(companyData);
         }
-      } catch (saveErr) {
-        const msg = saveErr instanceof Error ? saveErr.message : String(saveErr);
-        console.error(`❌ Save exception for ${companyData.company_name}:`, msg);
-        emit({ type: 'step', text: `Save error for ${companyData.company_name}`, icon: '❌', sub: msg.slice(0, 80) });
+      } catch {
         savedCompanies.push(companyData);
       }
 
@@ -138,10 +126,6 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { messages, action, companyNames } = body;
 
-    // Detect if request came through the local grove-bridge (sets x-grove-bridge: 1)
-    // When true, all internal fetches (save, clear) must target localhost:3742, not Vercel
-    const isBridge = request.headers.get('x-grove-bridge') === '1';
-
     // Handle deep research action — STREAMING
     if (action === 'deep_research') {
       if (!companyNames || !Array.isArray(companyNames)) {
@@ -152,7 +136,7 @@ export async function POST(request: NextRequest) {
         emit({ type: 'step', text: `Starting deep research on ${companyNames.length} companies`, icon: '🚀', sub: companyNames.join(', ') });
 
         const results = `# Deep Research Results\n\nResearching **${companyNames.length}** companies with strict validation…\n\n---\n\n`;
-        const { results: r, savedCompanies, failCount } = await runResearch(companyNames, request.nextUrl.origin, emit, results, isBridge);
+        const { results: r, savedCompanies, failCount } = await runResearch(companyNames, request.nextUrl.origin, emit, results);
 
         const finalResults = r +
           `## Summary\n\n✅ **Passed Validation:** ${savedCompanies.length}/${companyNames.length}\n\n` +
@@ -184,11 +168,241 @@ export async function POST(request: NextRequest) {
     };
 
     const allMessages: ChatMessage[] = [systemMessage, ...messages];
-    
+
+    // Declare lowerContent once here — used by all intent checks below
+    const lowerContent = messages[messages.length - 1]?.content?.toLowerCase() || '';
+
+    // ── UPDATE CONTACTS for existing companies ─────────────────────────────────
+    // Triggered by: "update contacts", "find linkedin contacts", "fix contacts",
+    //   "enrich contacts", "find contacts for all companies", "update [company] contact", etc.
+    const isUpdateContacts =
+      (lowerContent.includes('update') || lowerContent.includes('find') ||
+       lowerContent.includes('enrich') || lowerContent.includes('fix') ||
+       lowerContent.includes('get') || lowerContent.includes('search') ||
+       lowerContent.includes('look up') || lowerContent.includes('improve')) &&
+      (lowerContent.includes('contact') || lowerContent.includes('linkedin') ||
+       lowerContent.includes('decision maker') || lowerContent.includes('decision-maker') ||
+       lowerContent.includes('reach out') || lowerContent.includes('email'));
+
+    if (isUpdateContacts) {
+      return makeStream(async (emit) => {
+        emit({ type: 'step', text: 'Loading companies from database…', icon: '📋' });
+
+        const existingRes = await fetch(`${request.nextUrl.origin}/api/companies`);
+        const existingData = await existingRes.json();
+        const companies: { id: string; company_name: string; contact_name?: string }[] =
+          existingData.data || [];
+
+        if (companies.length === 0) {
+          emit({ type: 'result', message: "No companies in your pipeline yet. Ask me to research some first!" });
+          return;
+        }
+
+        // Check if user named a specific company
+        const specificCompany = companies.find(c =>
+          lowerContent.includes(c.company_name.toLowerCase())
+        );
+        const targets = specificCompany ? [specificCompany] : companies;
+
+        emit({
+          type: 'step',
+          text: `Running deep LinkedIn contact search for ${targets.length} ${targets.length === 1 ? 'company' : 'companies'}…`,
+          icon: '🔍',
+          sub: targets.map(c => c.company_name).join(', '),
+        });
+
+        let found = 0;
+        let notFound = 0;
+        let resultsText = `# 🔍 Contact Search Results\n\n`;
+
+        for (let i = 0; i < targets.length; i++) {
+          const company = targets[i];
+          emit({
+            type: 'progress',
+            current: i,
+            total: targets.length,
+            company: company.company_name,
+          });
+          emit({
+            type: 'step',
+            text: `Searching LinkedIn + web for ${company.company_name}…`,
+            icon: '🔬',
+            sub: `${i + 1} of ${targets.length}`,
+          });
+
+          try {
+            const contact = await findContactForCompany(
+              company.company_name,
+              company.id,
+              request.nextUrl.origin
+            );
+
+            if (contact.contact_name) {
+              found++;
+              emit({
+                type: 'step',
+                text: `Found: ${contact.contact_name} at ${company.company_name}`,
+                icon: '✅',
+                sub: `${contact.contact_position || ''} — ${contact.confidence} confidence via ${contact.source}`,
+              });
+              resultsText += `## ${company.company_name}\n`;
+              resultsText += `✅ **${contact.contact_name}** — ${contact.contact_position || 'Role found'}\n`;
+              if (contact.contact_linkedin) resultsText += `🔗 [LinkedIn](${contact.contact_linkedin})\n`;
+              if (contact.contact_info && contact.contact_info !== 'Not found') resultsText += `📧 ${contact.contact_info}\n`;
+              resultsText += `_Confidence: ${contact.confidence} | Source: ${contact.source}_\n\n`;
+            } else {
+              notFound++;
+              emit({
+                type: 'step',
+                text: `No verified contact found for ${company.company_name}`,
+                icon: '⚠️',
+                sub: 'All candidates failed validation',
+              });
+              resultsText += `## ${company.company_name}\n`;
+              resultsText += `⚠️ No verified current contact found — existing data preserved\n\n`;
+            }
+          } catch (err) {
+            notFound++;
+            const msg = err instanceof Error ? err.message.slice(0, 80) : String(err);
+            emit({ type: 'step', text: `Error searching ${company.company_name}`, icon: '❌', sub: msg });
+            resultsText += `## ${company.company_name}\n❌ Search failed\n\n`;
+          }
+
+          if (i < targets.length - 1) {
+            await new Promise(r => setTimeout(r, 2500));
+          }
+        }
+
+        resultsText += `---\n\n## Summary\n\n`;
+        resultsText += `✅ **Contacts found & saved:** ${found}/${targets.length}\n`;
+        if (notFound > 0) resultsText += `⚠️ **Not found (existing data kept):** ${notFound}\n`;
+        resultsText += `\nRefresh the page to see updated contacts in the sidebar.`;
+
+        emit({ type: 'result', message: resultsText, savedCompanies: found });
+      });
+    }
+
+    // ── EDIT COMPANY DATA — natural language field updates ─────────────────────
+    // e.g. "set Microsoft's score to 9", "update IBM contact to John Smith",
+    //   "mark Salesforce as contacted", "change Google's notes to..."
+    const isAboutExistingCheck =
+      lowerContent.includes('them again') ||
+      lowerContent.includes('update them') ||
+      lowerContent.includes('re-research') ||
+      lowerContent.includes('reresearch') ||
+      lowerContent.includes('refresh them') ||
+      lowerContent.includes('the ones we have') ||
+      lowerContent.includes('existing companies') ||
+      lowerContent.includes('current companies') ||
+      lowerContent.includes('already have') ||
+      lowerContent.includes('we have') ||
+      (lowerContent.includes('update') && lowerContent.includes('compan')) ||
+      (lowerContent.includes('again') && lowerContent.includes('research'));
+
+    const isEditRequest =
+      (lowerContent.includes('set ') || lowerContent.includes('update ') ||
+       lowerContent.includes('change ') || lowerContent.includes('mark ') ||
+       lowerContent.includes('edit ') || lowerContent.includes('make ')) &&
+      !lowerContent.includes('update contact') &&   // handled above
+      !lowerContent.includes('find contact') &&
+      !isAboutExistingCheck;
+
+    if (isEditRequest) {
+      return makeStream(async (emit) => {
+        emit({ type: 'step', text: 'Loading company list…', icon: '📋' });
+
+        const existingRes = await fetch(`${request.nextUrl.origin}/api/companies`);
+        const existingData = await existingRes.json();
+        const companies: { id: string; company_name: string }[] = existingData.data || [];
+
+        if (companies.length === 0) {
+          emit({ type: 'result', message: "No companies in your pipeline yet." });
+          return;
+        }
+
+        // Ask AI to parse the edit intent into structured field updates
+        const editPrompt = `The user wants to edit company data in a sponsor research database.
+
+Company list: ${companies.map(c => `"${c.company_name}" (id: ${c.id})`).join(', ')}
+
+User request: "${messages[messages.length - 1]?.content}"
+
+Parse this into one or more database updates. Return ONLY a JSON array:
+[
+  {
+    "company_id": "the exact id from the list above",
+    "company_name": "human readable name",
+    "fields": {
+      "field_name": "new_value"
+    }
+  }
+]
+
+Valid field names:
+- contact_name (string)
+- contact_position (string)  
+- contact_linkedin (LinkedIn URL string)
+- contact_info (email string)
+- sponsorship_likelihood_score (number 1-10)
+- outreach_status ("not_started" | "contacted" | "responded" | "meeting_scheduled" | "declined" | "confirmed")
+- notes (string)
+- industry (string)
+- company_size (string)
+- website (URL string)
+- previously_sponsored (boolean)
+
+If you can't parse a valid edit, return [].`;
+
+        let edits: { company_id: string; company_name: string; fields: Record<string, unknown> }[] = [];
+        try {
+          const aiRaw = await chatWithOpenAI([{ role: 'user', content: editPrompt }]);
+          const jsonMatch = aiRaw.replace(/```json\n?/g, '').replace(/```\n?/g, '').match(/\[[\s\S]*\]/);
+          if (jsonMatch) edits = JSON.parse(jsonMatch[0]);
+        } catch { /* fallback empty */ }
+
+        if (edits.length === 0) {
+          emit({
+            type: 'result',
+            message: `I wasn't sure what to edit. Try being more specific, like:\n- "Set Microsoft's score to 9"\n- "Mark IBM as contacted"\n- "Update Google's contact to Jane Smith, VP Marketing"\n- "Change Salesforce notes to: great lead, follow up in Q2"`,
+          });
+          return;
+        }
+
+        let updatedCount = 0;
+        let resultsText = `# ✏️ Company Data Updated\n\n`;
+
+        for (const edit of edits) {
+          emit({ type: 'step', text: `Updating ${edit.company_name}…`, icon: '✏️', sub: Object.keys(edit.fields).join(', ') });
+          try {
+            const patchRes = await fetch(`${request.nextUrl.origin}/api/companies/${edit.company_id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(edit.fields),
+            });
+            if (patchRes.ok) {
+              updatedCount++;
+              resultsText += `## ${edit.company_name}\n`;
+              for (const [key, val] of Object.entries(edit.fields)) {
+                resultsText += `✅ **${key}** → ${val}\n`;
+              }
+              resultsText += '\n';
+              emit({ type: 'step', text: `Updated ${edit.company_name}`, icon: '✅', sub: `${Object.keys(edit.fields).join(', ')} saved` });
+            } else {
+              resultsText += `## ${edit.company_name}\n❌ Update failed\n\n`;
+            }
+          } catch {
+            resultsText += `## ${edit.company_name}\n❌ Update failed\n\n`;
+          }
+        }
+
+        resultsText += `---\n\n✅ **${updatedCount} ${updatedCount === 1 ? 'company' : 'companies'} updated** and synced to Google Sheets.`;
+        emit({ type: 'result', message: resultsText, savedCompanies: updatedCount });
+      });
+    }
+
     // Check if this is a delete/clear request
     // Must be an EXPLICIT destructive intent: "delete all companies", "clear everything", "remove all from spreadsheet"
     // Avoid false positives on: "clear the formatting", "update the data", "change the sheet colors"
-    const lowerContent = messages[messages.length - 1]?.content?.toLowerCase() || '';
     const hasDestructiveVerb =
       lowerContent.includes('delete all') ||
       lowerContent.includes('remove all') ||
@@ -209,12 +423,9 @@ export async function POST(request: NextRequest) {
         emit({ type: 'step', text: 'Clearing all companies from database…', icon: '🗑️' });
 
         try {
-          const clearOrigin = isBridge ? 'http://localhost:3742' : request.nextUrl.origin;
-          const clearResponse = await fetch(`${clearOrigin}/api/companies/clear`, { method: 'DELETE' });
+          const clearResponse = await fetch(`${request.nextUrl.origin}/api/companies/clear`, { method: 'DELETE' });
           if (!clearResponse.ok) {
-            const errBody = await clearResponse.text().catch(() => '');
-            console.error('❌ Clear failed:', clearResponse.status, errBody);
-            emit({ type: 'result', message: `❌ Failed to delete companies (${clearResponse.status}). ${errBody.slice(0, 100)}` });
+            emit({ type: 'result', message: '❌ Failed to delete companies. Please try again.' });
             return;
           }
 
@@ -247,7 +458,7 @@ export async function POST(request: NextRequest) {
           emit({ type: 'step', text: `Selected ${chosenCompanies.length} companies to research`, icon: '🎯', sub: chosenCompanies.join(', ') });
 
           const prefix = `✅ All companies deleted.\n\n# 🔬 Researching ${chosenCompanies.length} Fresh Companies\n\nSelected: **${chosenCompanies.join(', ')}**\n\n---\n\n`;
-          const { results, savedCompanies, failCount } = await runResearch(chosenCompanies, request.nextUrl.origin, emit, prefix, isBridge);
+          const { results, savedCompanies, failCount } = await runResearch(chosenCompanies, request.nextUrl.origin, emit, prefix);
 
           const final = results + `## Summary\n\n✅ **Saved:** ${savedCompanies.length}/${chosenCompanies.length}\n\n` +
             (failCount > 0 ? `❌ **Failed:** ${failCount}\n\n` : '') +
@@ -332,7 +543,7 @@ export async function POST(request: NextRequest) {
         emit({ type: 'step', text: `Found ${existingCompanies.length} companies to refresh`, icon: '🔄', sub: existingCompanies.join(', ') });
 
         const prefix = `# 🔄 Re-Researching ${existingCompanies.length} Existing Companies\n\nUpdating: **${existingCompanies.join(', ')}**\n\n---\n\n`;
-        const { results, savedCompanies, failCount } = await runResearch(existingCompanies, request.nextUrl.origin, emit, prefix, isBridge);
+        const { results, savedCompanies, failCount } = await runResearch(existingCompanies, request.nextUrl.origin, emit, prefix);
 
         const final = results +
           `## Summary\n\n✅ **Updated:** ${savedCompanies.length}/${existingCompanies.length}\n\n` +
@@ -394,7 +605,7 @@ export async function POST(request: NextRequest) {
         emit({ type: 'step', text: `Running verified research for ${contactCompany}…`, icon: '🔬', sub: 'Only confirmed current employees will be saved' });
 
         const prefix = `# 🔬 Researching ${contactCompany}\n\nRunning a real web search to find a **verified, current** contact — no guessing.\n\n---\n\n`;
-        const { results, savedCompanies, failCount } = await runResearch([contactCompany], request.nextUrl.origin, emit, prefix, isBridge);
+        const { results, savedCompanies, failCount } = await runResearch([contactCompany], request.nextUrl.origin, emit, prefix);
 
         const final = results +
           (savedCompanies.length > 0
@@ -427,7 +638,7 @@ export async function POST(request: NextRequest) {
         emit({ type: 'step', text: `Queued ${chosenCompanies.length} companies for research`, icon: '🎯', sub: chosenCompanies.join(', ') });
 
         const prefix = `# 🔬 Researching ${chosenCompanies.length} Companies for Sloss.Tech\n\nSelected: **${chosenCompanies.join(', ')}**\n\n---\n\n`;
-        const { results, savedCompanies, failCount } = await runResearch(chosenCompanies, request.nextUrl.origin, emit, prefix, isBridge);
+        const { results, savedCompanies, failCount } = await runResearch(chosenCompanies, request.nextUrl.origin, emit, prefix);
 
         const final = results +
           `## Summary\n\n✅ **Saved to pipeline:** ${savedCompanies.length}/${chosenCompanies.length}\n\n` +

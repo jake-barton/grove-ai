@@ -1,54 +1,30 @@
-// Returns the current AI provider + model and whether it's reachable
 import { NextResponse } from 'next/server';
-import { getLMStudioURL, getLMStudioActive } from '@/lib/runtime-config';
 
 export async function GET() {
-  // Check DB first (set by tunnel script), fall back to env vars
-  let useLMStudio = false;
-  let lmStudioBaseURL = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
-
-  try {
-    const [dbActive, dbURL] = await Promise.all([getLMStudioActive(), getLMStudioURL()]);
-    if (dbActive && dbURL) {
-      useLMStudio = true;
-      lmStudioBaseURL = dbURL;
-    } else {
-      useLMStudio = process.env.LMSTUDIO_MODE === 'true' || process.env.OPENAI_API_KEY === 'lm-studio';
-    }
-  } catch {
-    useLMStudio = process.env.LMSTUDIO_MODE === 'true' || process.env.OPENAI_API_KEY === 'lm-studio';
-  }
+  const useLMStudio = process.env.LMSTUDIO_MODE === 'true';
+  const hasOpenAIKey =
+    !!process.env.OPENAI_API_KEY &&
+    process.env.OPENAI_API_KEY !== 'your_openai_api_key_here';
 
   if (useLMStudio) {
+    // Try to ping the LM Studio server
+    const base = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
     try {
-      const res = await fetch(`${lmStudioBaseURL}/models`, {
-        signal: AbortSignal.timeout(4000),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const models: { id: string }[] = data?.data ?? [];
-      const modelId = models[0]?.id ?? 'connected';
-      return NextResponse.json({
-        provider: 'LM Studio',
-        model: modelId,
-        connected: true,
-        url: lmStudioBaseURL,
-      });
+      const res = await fetch(`${base}/models`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) {
+        const data = await res.json();
+        const model: string = data?.data?.[0]?.id ?? 'local model';
+        return NextResponse.json({ status: 'connected', mode: 'lmstudio', model });
+      }
     } catch {
-      return NextResponse.json({
-        provider: 'LM Studio',
-        model: null,
-        connected: false,
-        url: lmStudioBaseURL,
-      });
+      // LM Studio not reachable
     }
+    return NextResponse.json({ status: 'disconnected', mode: 'lmstudio', model: null });
   }
 
-  const hasKey = !!process.env.OPENAI_API_KEY;
   return NextResponse.json({
-    provider: 'OpenAI',
+    status: hasOpenAIKey ? 'connected' : 'no-key',
+    mode: 'openai',
     model: 'gpt-4o',
-    connected: hasKey,
-    url: 'https://api.openai.com/v1',
   });
 }

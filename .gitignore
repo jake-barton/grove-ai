@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# but DO commit the example template (no real secrets)
+!.env.local.example
 
 # persistent data
 /data
@@ -40,9 +42,12 @@ companies.json
 # vercel
 .vercel
 
+# old startup scripts (replaced by Start Grove AI.command)
+start.sh
+"Start Grove with LM Studio.command"
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
 
 /lib/generated/prisma
-.env*.local

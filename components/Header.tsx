@@ -1,40 +1,56 @@
 // Header — TechBirmingham × Grove dark redesign
 'use client';
 
-import { ExternalLink, Database } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import LMStudioModal from './LMStudioModal';
-
-interface AIStatus {
-  provider: string;
-  model: string | null;
-  connected: boolean;
-  url: string;
-}
+import { ExternalLink, Database } from 'lucide-react';
 
 interface HeaderProps {
   onExport: () => void;
   companyCount: number;
 }
 
-export default function Header({ onExport, companyCount }: HeaderProps) {
-  const [aiStatus, setAiStatus] = useState<AIStatus | null>(null);
-  const [showLMModal, setShowLMModal] = useState(false);
+type AIStatus = 'connected' | 'disconnected' | 'no-key' | 'loading';
 
-  function fetchStatus() {
-    fetch('/api/ai-status')
-      .then(r => r.json())
-      .then(setAiStatus)
-      .catch(() => setAiStatus({ provider: 'Unknown', model: null, connected: false, url: '' }));
-  }
+function useAIStatus() {
+  const [status, setStatus] = useState<AIStatus>('loading');
+  const [label, setLabel] = useState('');
 
   useEffect(() => {
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 30_000);
-    return () => clearInterval(interval);
+    const check = async () => {
+      try {
+        const res = await fetch('/api/ai-status');
+        if (!res.ok) { setStatus('disconnected'); setLabel('error'); return; }
+        const data = await res.json();
+        setStatus(data.status === 'connected' ? 'connected' : data.status);
+        setLabel(
+          data.mode === 'openai'
+            ? `OpenAI · ${data.model ?? 'gpt-4o'}`
+            : data.status === 'connected'
+              ? `LM Studio · ${data.model ?? 'local'}`
+              : 'LM Studio · offline'
+        );
+      } catch {
+        setStatus('disconnected');
+        setLabel('unreachable');
+      }
+    };
+    check();
+    const id = setInterval(check, 15000);
+    return () => clearInterval(id);
   }, []);
+
+  return { status, label };
+}
+
+export default function Header({ onExport, companyCount }: HeaderProps) {
+  const ai = useAIStatus();
+
+  const pillColor =
+    ai.status === 'connected'  ? { bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.35)', dot: '#22c55e', text: '#86efac' } :
+    ai.status === 'loading'    ? { bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.25)', dot: '#94a3b8', text: '#94a3b8' } :
+                                 { bg: 'rgba(239,68,68,0.10)', border: 'rgba(239,68,68,0.30)', dot: '#ef4444', text: '#fca5a5' };
+
   return (
-    <>
     <header
       className="scan-line border-b px-6 py-0 shrink-0 relative overflow-hidden"
       style={{
@@ -75,12 +91,12 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
               </span>
             </div>
             <div className="flex items-center gap-1.5 mt-0.5">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/TechBirminghamAsset 1.svg"
-                alt=""
-                style={{ width: 14, height: 14, objectFit: 'contain', opacity: 0.9 }}
-              />
+              {/* 🌳 deciduous tree */}
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--tb-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="8" r="6"/>
+                <line x1="12" y1="14" x2="12" y2="21"/>
+                <line x1="8" y1="21" x2="16" y2="21"/>
+              </svg>
               <span className="teal-shimmer text-xs font-semibold">
                 Grove — AI Sponsor Research
               </span>
@@ -88,46 +104,34 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
           </div>
         </div>
 
-        {/* ── Right: AI status + counter + actions ── */}
+        {/* ── Right: AI status pill + counter + actions ── */}
         <div className="flex items-center gap-3">
 
-          {/* AI connection status pill — click to open LM Studio connect modal */}
-          <button
-            onClick={() => setShowLMModal(true)}
-            title={aiStatus ? `${aiStatus.provider} · ${aiStatus.url}\nClick to configure local AI` : 'Click to configure AI connection'}
+          {/* AI status — simple read-only pill, no modal */}
+          <div
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: 6,
+              gap: '6px',
               padding: '4px 10px',
-              borderRadius: 9999,
-              border: `1px solid ${aiStatus === null ? 'var(--border-mid)' : aiStatus.connected ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)'}`,
-              background: aiStatus === null ? 'var(--bg-card)' : aiStatus.connected ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
-              fontSize: 11,
+              borderRadius: '999px',
+              fontSize: '0.72rem',
               fontWeight: 600,
-              letterSpacing: '0.03em',
-              color: aiStatus === null ? 'var(--text-muted)' : aiStatus.connected ? 'rgb(134,239,172)' : 'rgb(252,165,165)',
+              letterSpacing: '0.02em',
+              background: pillColor.bg,
+              border: `1px solid ${pillColor.border}`,
+              color: pillColor.text,
               whiteSpace: 'nowrap',
-              userSelect: 'none',
-              transition: 'all 0.3s ease',
-              cursor: 'pointer',
             }}
           >
-            {/* Status dot */}
             <span style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
+              width: 7, height: 7, borderRadius: '50%',
+              background: pillColor.dot,
+              boxShadow: ai.status === 'connected' ? `0 0 6px ${pillColor.dot}` : 'none',
               flexShrink: 0,
-              background: aiStatus === null ? 'var(--text-muted)' : aiStatus.connected ? 'rgb(34,197,94)' : 'rgb(239,68,68)',
-              boxShadow: aiStatus?.connected ? '0 0 6px rgb(34,197,94)' : 'none',
             }} />
-            {aiStatus === null
-              ? 'Connecting…'
-              : aiStatus.connected
-                ? `${aiStatus.provider} · ${aiStatus.model ?? 'connected'}`
-                : `${aiStatus.provider} · disconnected`}
-          </button>
+            {ai.status === 'loading' ? 'Checking AI…' : ai.label}
+          </div>
           <div className="text-right pr-3 border-r" style={{ borderColor: 'var(--border)' }}>
             <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
               Companies tracked
@@ -179,13 +183,5 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
         </div>
       </div>
     </header>
-
-    <LMStudioModal
-      isOpen={showLMModal}
-      onClose={() => setShowLMModal(false)}
-      currentURL={aiStatus?.provider === 'LM Studio' ? (aiStatus.url ?? null) : null}
-      onStatusChange={() => { fetchStatus(); }}
-    />
-    </>
   );
 }

@@ -1,6 +1,6 @@
 // API Route: Chat with AI assistant — streaming research updates
 import { NextRequest, NextResponse } from 'next/server';
-import { chatWithOpenAI, SYSTEM_PROMPT, ChatMessage } from '@/lib/openai';
+import { chatWithOpenAI, classifyIntent, SYSTEM_PROMPT, ChatMessage } from '@/lib/openai';
 import { researchCompany, batchResearchCompanies, findContactForCompany } from '@/lib/ai-agent';
 import { handleNaturalLanguageFormat } from '@/lib/sheets-formatter';
 
@@ -236,7 +236,7 @@ Return ONLY valid JSON, nothing else.`;
     } = { intent: 'CHAT' };
 
     try {
-      const raw = await chatWithOpenAI([{ role: 'user', content: classifierPrompt }]);
+      const raw = await classifyIntent([{ role: 'user', content: classifierPrompt }]);
       const match = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').match(/\{[\s\S]*\}/);
       if (match) intent = JSON.parse(match[0]);
     } catch {
@@ -264,7 +264,7 @@ Return ONLY a JSON array of company name strings. Example: ["Stripe", "Twilio", 
 
       let chosenCompanies: string[] = [];
       try {
-        const aiRaw = await chatWithOpenAI([{ role: 'user', content: selectionPrompt }]);
+        const aiRaw = await classifyIntent([{ role: 'user', content: selectionPrompt }]);
         const jsonMatch = aiRaw.replace(/```json\n?/g, '').replace(/```\n?/g, '').match(/\[[\s\S]*?\]/);
         if (jsonMatch) chosenCompanies = JSON.parse(jsonMatch[0]).slice(0, count);
       } catch { /* fallback */ }
@@ -375,7 +375,7 @@ If nothing to parse, return [].`;
 
       let edits: { company_id: string; company_name: string; fields: Record<string, unknown> }[] = [];
       try {
-        const aiRaw = await chatWithOpenAI([{ role: 'user', content: editPrompt }]);
+        const aiRaw = await classifyIntent([{ role: 'user', content: editPrompt }]);
         const jsonMatch = aiRaw.replace(/```json\n?/g, '').replace(/```\n?/g, '').match(/\[[\s\S]*\]/);
         if (jsonMatch) edits = JSON.parse(jsonMatch[0]);
       } catch { /* empty */ }

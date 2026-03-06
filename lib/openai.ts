@@ -3,31 +3,54 @@
 import OpenAI from 'openai';
 import { getAIMode } from '@/lib/ai-mode';
 
-// LM Studio runs on localhost:1234 with OpenAI-compatible API
-// Mode is read at request-time from the runtime .ai-mode file so toggling
-// the switch in the UI takes effect immediately — no server restart needed.
 function isLMStudio() {
   return getAIMode() === 'lmstudio';
 }
 
-// Allow overriding the LM Studio base URL via env var (useful when running on a different machine/port)
 const lmStudioBaseURL = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
 
-function getClient() {
-  const useLM = isLMStudio();
+// Cache the active LM Studio model so we don't re-fetch it every call
+let _cachedLMModel: string | null = null;
+async function getActiveLMStudioModel(): Promise<string> {
+  if (_cachedLMModel) return _cachedLMModel;
+  try {
+    const res = await fetch(`${lmStudioBaseURL}/models`, { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      const data = await res.json();
+      // Pick first model that is actually loaded (not just listed)
+      const model = data?.data?.[0]?.id;
+      if (model) {
+        _cachedLMModel = model;
+        return model;
+      }
+    }
+  } catch { /* fallback */ }
+  return 'local-model';
+}
+
+function getClient(forceOpenAI = false) {
+  const useLM = !forceOpenAI && isLMStudio();
   return new OpenAI({
     apiKey: useLM ? 'lm-studio' : process.env.OPENAI_API_KEY,
     baseURL: useLM ? lmStudioBaseURL : 'https://api.openai.com/v1',
   });
 }
 
-// Full research uses gpt-4o for best quality
-// Contact extraction uses gpt-4o-mini — 10x cheaper, just as good for extraction tasks
-function getDefaultChatModel() { return isLMStudio() ? 'openai/gpt-oss-20b' : 'gpt-4o'; }
-function getDefaultJsonModel() { return isLMStudio() ? 'openai/gpt-oss-20b' : 'gpt-4o'; }
-export function getFastExtractionModel() { return isLMStudio() ? 'openai/gpt-oss-20b' : 'gpt-4o-mini'; }
-// Keep as export for any code that imported the old constant
-export const FAST_EXTRACTION_MODEL = 'gpt-4o-mini';
+// Intent classification always uses OpenAI (fast, cheap, reliable — LM Studio can't always load)
+// Research/chat uses whichever mode is selected
+async function getDefaultChatModel(): Promise<string> {
+  if (isLMStudio()) return await getActiveLMStudioModel();
+  return 'gpt-4o';
+}
+async function getDefaultJsonModel(): Promise<string> {
+  if (isLMStudio()) return await getActiveLMStudioModel();
+  return 'gpt-4o';
+}
+export async function getFastExtractionModel(): Promise<string> {
+  if (isLMStudio()) return await getActiveLMStudioModel();
+  return 'gpt-4o-mini';
+}
+export const FAST_EXTRACTION_MODEL = 'gpt-4o-mini'; // kept for backward compat
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -59,12 +82,13 @@ async function withRetry<T>(
 }
 
 /**
- * Chat with OpenAI GPT-4o
+ * Chat — uses LM Studio model or gpt-4o depending on mode
  */
 export async function chatWithOpenAI(
   messages: ChatMessage[],
-  model: string = getDefaultChatModel()
+  modelOverride?: string
 ): Promise<string> {
+  const model = modelOverride ?? await getDefaultChatModel();
   return withRetry(async () => {
     const response = await getClient().chat.completions.create({
       model,
@@ -77,12 +101,29 @@ export async function chatWithOpenAI(
 }
 
 /**
- * Generate structured JSON response — full research (gpt-4o)
+ * Intent classification — ALWAYS uses OpenAI gpt-4o-mini regardless of mode toggle.
+ * Fast, cheap, and LM Studio can't reliably load models for this.
+ */
+export async function classifyIntent(messages: ChatMessage[]): Promise<string> {
+  return withRetry(async () => {
+    const response = await getClient(true).chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      temperature: 0.0,
+      max_tokens: 300,
+    });
+    return response.choices[0]?.message?.content || '';
+  });
+}
+
+/**
+ * Generate structured JSON response — full research
  */
 export async function generateWithOpenAI(
   prompt: string,
-  model: string = getDefaultJsonModel()
+  modelOverride?: string
 ): Promise<string> {
+  const model = modelOverride ?? await getDefaultJsonModel();
   return withRetry(async () => {
     const response = await getClient().chat.completions.create({
       model,
@@ -101,10 +142,7 @@ export async function generateWithOpenAI(
 
 You output ONLY valid JSON. No explanations, no markdown, no prose outside the JSON object.`,
         },
-        {
-          role: 'user',
-          content: prompt,
-        },
+        { role: 'user', content: prompt },
       ],
       temperature: 0.1,
       max_tokens: 8000,
@@ -114,13 +152,12 @@ You output ONLY valid JSON. No explanations, no markdown, no prose outside the J
 }
 
 /**
- * Fast contact extraction — uses gpt-4o-mini (cheaper + faster, same quality for extraction)
- * Used by findContactForCompany() to avoid burning gpt-4o quota on simple extraction tasks
+ * Fast contact extraction — always uses OpenAI gpt-4o-mini (reliable, cheap)
  */
 export async function extractContactWithAI(prompt: string): Promise<string> {
   return withRetry(async () => {
-    const response = await getClient().chat.completions.create({
-      model: getFastExtractionModel(),
+    const response = await getClient(true).chat.completions.create({
+      model: 'gpt-4o-mini',
       messages: [
         {
           role: 'system',
@@ -141,8 +178,9 @@ export async function extractContactWithAI(prompt: string): Promise<string> {
 export async function generateWithSystemPrompt(
   systemPrompt: string,
   userPrompt: string,
-  model: string = getDefaultJsonModel()
+  modelOverride?: string
 ): Promise<string> {
+  const model = modelOverride ?? await getDefaultJsonModel();
   try {
     const response = await getClient().chat.completions.create({
       model,

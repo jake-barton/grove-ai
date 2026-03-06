@@ -173,13 +173,31 @@ export async function POST(request: NextRequest) {
     const lowerContent = messages[messages.length - 1]?.content?.toLowerCase() || '';
 
     // ── UPDATE CONTACTS for existing companies ─────────────────────────────────
-    // Triggered by: "update contacts", "find linkedin contacts", "fix contacts",
-    //   "enrich contacts", "find contacts for all companies", "update [company] contact", etc.
+    // Triggered by: "update contacts", "find linkedin contacts for our companies", "fix contacts",
+    //   "enrich contacts", "update [company] contact", etc.
+    // NOT triggered by: "find 3 new companies with LinkedIn contacts" (that's a sponsor research request)
+    const isAboutNewCompanies =
+      lowerContent.includes('new compan') ||
+      lowerContent.includes('new sponsor') ||
+      lowerContent.includes('more compan') ||
+      lowerContent.includes('more sponsor') ||
+      lowerContent.includes('find compan') ||
+      lowerContent.includes('find sponsor') ||
+      lowerContent.includes('suggest compan') ||
+      lowerContent.includes('look for compan') ||
+      lowerContent.includes('research compan') ||
+      /find\s+\d+\s+(new\s+)?(compan|sponsor)/i.test(lowerContent);
+
     const isUpdateContacts =
-      (lowerContent.includes('update') || lowerContent.includes('find') ||
-       lowerContent.includes('enrich') || lowerContent.includes('fix') ||
-       lowerContent.includes('get') || lowerContent.includes('search') ||
-       lowerContent.includes('look up') || lowerContent.includes('improve')) &&
+      !isAboutNewCompanies &&
+      (lowerContent.includes('update') || lowerContent.includes('enrich') ||
+       lowerContent.includes('fix') || lowerContent.includes('improve') ||
+       lowerContent.includes('refresh') ||
+       // "find contacts" only when NOT finding new companies
+       (lowerContent.includes('find') && (lowerContent.includes('contact') || lowerContent.includes('linkedin')) && !isAboutNewCompanies) ||
+       (lowerContent.includes('get') && (lowerContent.includes('contact') || lowerContent.includes('linkedin'))) ||
+       (lowerContent.includes('search') && (lowerContent.includes('contact') || lowerContent.includes('linkedin'))) ||
+       (lowerContent.includes('look up') && (lowerContent.includes('contact') || lowerContent.includes('linkedin')))) &&
       (lowerContent.includes('contact') || lowerContent.includes('linkedin') ||
        lowerContent.includes('decision maker') || lowerContent.includes('decision-maker') ||
        lowerContent.includes('reach out') || lowerContent.includes('email'));
@@ -560,7 +578,9 @@ If you can't parse a valid edit, return [].`;
        lowerContent.includes('look for') || lowerContent.includes('get me') ||
        lowerContent.includes('give me') ||
        (lowerContent.includes('research') && !lowerContent.includes('research them') && !lowerContent.includes('research the'))) &&
-      (lowerContent.includes('sponsor') || lowerContent.includes('companies') || lowerContent.includes('company'));
+      (lowerContent.includes('sponsor') || lowerContent.includes('companies') || lowerContent.includes('company') ||
+       // "find 3 new X with LinkedIn contacts" — new companies request even when mentioning contacts
+       isAboutNewCompanies);
 
     // Check if this is a contact lookup for a specific company
     // e.g. "find a contact at AWS", "who should I reach out to at Google", "research a LinkedIn contact for Stripe"

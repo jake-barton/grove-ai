@@ -427,6 +427,16 @@ STEP 2: EXTRACT THE CONTACT NAME
 - NEVER invent names. NEVER use: "John Doe", "Jane Doe", "John Smith"
 - If no real name found anywhere, use "Not found"
 
+STEP 2b: FIND THE CONTACT'S PERSONAL LINKEDIN URL
+- Once you have a contact name, search ALL search result snippets, titles, and links for their LinkedIn profile URL
+- LinkedIn personal profile URLs look like: "linkedin.com/in/firstname-lastname-12345"
+- Check ALL sections: Hunter contacts (linkedin field), LinkedIn People results, Named Executive searches, Press Quote results
+- The URL often appears in the "link" field of a result OR embedded in a snippet/title
+- COPY the EXACT URL character-for-character — including any numeric suffix (e.g. "-a1b2c3")
+- If the contact was found via Hunter and Hunter provided a linkedin field, USE THAT URL
+- If you cannot find a LinkedIn URL for this specific person in the search data, use "Not found"
+- NEVER construct or guess a LinkedIn URL — only use URLs that appear verbatim in the search data
+
 STEP 3: GET THE CONTACT EMAIL
 - If Hunter.io found this person: use their email from the Hunter results (it's verified)
 - Otherwise, check "Contact Emails Found" at the bottom for domain emails
@@ -576,25 +586,47 @@ Respond ONLY with valid JSON. No explanations, no markdown, just pure JSON.`;
     }
   };
 
+  // Extract the profile slug from a linkedin /in/ or /company/ URL
+  const linkedInSlug = (url: string): string => {
+    const lower = url.toLowerCase();
+    if (lower.includes('/in/')) return lower.split('/in/')[1]?.split(/[/?#]/)[0] || '';
+    if (lower.includes('/company/')) return lower.split('/company/')[1]?.split(/[/?#]/)[0] || '';
+    return '';
+  };
+
+  // Build a flat corpus of ALL text from search results (links + titles + snippets)
+  // so we can check if a profile slug appears anywhere — not just in a link field
+  const allSearchText = allSearchResults
+    .map(r => `${r.link || ''} ${r.title || ''} ${r.snippet || ''}`)
+    .join(' ')
+    .toLowerCase();
+
   if (validatedContactLinkedIn) {
     const normalised = normaliseLinkedIn(validatedContactLinkedIn);
+    const slug = linkedInSlug(validatedContactLinkedIn);
     const fromHunter = [...hunterLinkedInUrls].some(u => normaliseLinkedIn(u) === normalised);
-    const foundInResults = fromHunter || [...allSearchResultUrls].some(
+    const foundInLinks = [...allSearchResultUrls].some(
       u => normaliseLinkedIn(u) === normalised || u.includes(validatedContactLinkedIn!.toLowerCase())
     );
+    // Also accept if the profile slug appears in any snippet/title text (AI reads from snippet, not just link)
+    const slugFoundInText = slug.length >= 4 && allSearchText.includes(slug);
+    const foundInResults = fromHunter || foundInLinks || slugFoundInText;
     if (!foundInResults) {
       console.warn(`⚠️ Contact LinkedIn URL not found in search results or Hunter, rejecting: ${validatedContactLinkedIn}`);
       validatedContactLinkedIn = null;
     } else {
-      console.log(`✅ Contact LinkedIn verified (${fromHunter ? 'Hunter' : 'search'}): ${validatedContactLinkedIn}`);
+      console.log(`✅ Contact LinkedIn verified (${fromHunter ? 'Hunter' : slugFoundInText ? 'snippet-text' : 'link'}): ${validatedContactLinkedIn}`);
     }
   }
   
   if (validatedCompanyLinkedIn) {
     const normalised = normaliseLinkedIn(validatedCompanyLinkedIn);
-    const foundInResults = [...allSearchResultUrls].some(
+    const slug = linkedInSlug(validatedCompanyLinkedIn);
+    const foundInLinks = [...allSearchResultUrls].some(
       u => normaliseLinkedIn(u) === normalised || u.includes(validatedCompanyLinkedIn!.toLowerCase())
     );
+    const slugFoundInText = slug.length >= 4 && allSearchText.includes(slug);
+    const foundInResults = foundInLinks || slugFoundInText;
     if (!foundInResults) {
       console.warn(`⚠️ Company LinkedIn URL not found in search results, rejecting: ${validatedCompanyLinkedIn}`);
       validatedCompanyLinkedIn = null;

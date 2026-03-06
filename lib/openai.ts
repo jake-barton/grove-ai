@@ -117,15 +117,18 @@ export async function classifyIntent(messages: ChatMessage[]): Promise<string> {
 }
 
 /**
- * Generate structured JSON response — full research
+ * Generate structured JSON response — full research.
+ * ALWAYS uses OpenAI (gpt-4o) regardless of mode toggle.
+ * Reason: the research prompt is 8-12k tokens — LM Studio models don't have the context window for it.
  */
 export async function generateWithOpenAI(
   prompt: string,
   modelOverride?: string
 ): Promise<string> {
-  const model = modelOverride ?? await getDefaultJsonModel();
+  // Force OpenAI — LM Studio context windows can't handle the full research prompt
+  const model = modelOverride ?? 'gpt-4o';
   return withRetry(async () => {
-    const response = await getClient().chat.completions.create({
+    const response = await getClient(true).chat.completions.create({
       model,
       messages: [
         {

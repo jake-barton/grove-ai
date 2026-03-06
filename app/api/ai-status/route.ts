@@ -1,13 +1,13 @@
 import { NextResponse } from 'next/server';
+import { getAIMode } from '@/lib/ai-mode';
 
 export async function GET() {
-  const useLMStudio = process.env.LMSTUDIO_MODE === 'true';
+  const mode = getAIMode();
   const hasOpenAIKey =
     !!process.env.OPENAI_API_KEY &&
     process.env.OPENAI_API_KEY !== 'your_openai_api_key_here';
 
-  if (useLMStudio) {
-    // Try to ping the LM Studio server
+  if (mode === 'lmstudio') {
     const base = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
     try {
       const res = await fetch(`${base}/models`, { signal: AbortSignal.timeout(2000) });

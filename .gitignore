@@ -51,3 +51,4 @@ start.sh
 next-env.d.ts
 
 /lib/generated/prisma
+.ai-mode

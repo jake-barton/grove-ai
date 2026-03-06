@@ -1,24 +1,33 @@
 // OpenAI integration for chat
 // Works with OpenAI API OR LM Studio local server (OpenAI-compatible)
 import OpenAI from 'openai';
+import { getAIMode } from '@/lib/ai-mode';
 
 // LM Studio runs on localhost:1234 with OpenAI-compatible API
-// If OPENAI_API_KEY is set to "lm-studio" or LMSTUDIO_MODE is true, use local LM Studio
-const useLMStudio = process.env.LMSTUDIO_MODE === 'true' || process.env.OPENAI_API_KEY === 'lm-studio';
+// Mode is read at request-time from the runtime .ai-mode file so toggling
+// the switch in the UI takes effect immediately — no server restart needed.
+function isLMStudio() {
+  return getAIMode() === 'lmstudio';
+}
 
 // Allow overriding the LM Studio base URL via env var (useful when running on a different machine/port)
 const lmStudioBaseURL = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
 
-const openai = new OpenAI({
-  apiKey: useLMStudio ? 'lm-studio' : process.env.OPENAI_API_KEY,
-  baseURL: useLMStudio ? lmStudioBaseURL : 'https://api.openai.com/v1',
-});
+function getClient() {
+  const useLM = isLMStudio();
+  return new OpenAI({
+    apiKey: useLM ? 'lm-studio' : process.env.OPENAI_API_KEY,
+    baseURL: useLM ? lmStudioBaseURL : 'https://api.openai.com/v1',
+  });
+}
 
 // Full research uses gpt-4o for best quality
 // Contact extraction uses gpt-4o-mini — 10x cheaper, just as good for extraction tasks
-const DEFAULT_CHAT_MODEL = useLMStudio ? 'openai/gpt-oss-20b' : 'gpt-4o';
-const DEFAULT_JSON_MODEL = useLMStudio ? 'openai/gpt-oss-20b' : 'gpt-4o';
-export const FAST_EXTRACTION_MODEL = useLMStudio ? 'openai/gpt-oss-20b' : 'gpt-4o-mini';
+function getDefaultChatModel() { return isLMStudio() ? 'openai/gpt-oss-20b' : 'gpt-4o'; }
+function getDefaultJsonModel() { return isLMStudio() ? 'openai/gpt-oss-20b' : 'gpt-4o'; }
+export function getFastExtractionModel() { return isLMStudio() ? 'openai/gpt-oss-20b' : 'gpt-4o-mini'; }
+// Keep as export for any code that imported the old constant
+export const FAST_EXTRACTION_MODEL = 'gpt-4o-mini';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -54,10 +63,10 @@ async function withRetry<T>(
  */
 export async function chatWithOpenAI(
   messages: ChatMessage[],
-  model: string = DEFAULT_CHAT_MODEL
+  model: string = getDefaultChatModel()
 ): Promise<string> {
   return withRetry(async () => {
-    const response = await openai.chat.completions.create({
+    const response = await getClient().chat.completions.create({
       model,
       messages,
       temperature: 0.2,
@@ -72,10 +81,10 @@ export async function chatWithOpenAI(
  */
 export async function generateWithOpenAI(
   prompt: string,
-  model: string = DEFAULT_JSON_MODEL
+  model: string = getDefaultJsonModel()
 ): Promise<string> {
   return withRetry(async () => {
-    const response = await openai.chat.completions.create({
+    const response = await getClient().chat.completions.create({
       model,
       messages: [
         {
@@ -110,8 +119,8 @@ You output ONLY valid JSON. No explanations, no markdown, no prose outside the J
  */
 export async function extractContactWithAI(prompt: string): Promise<string> {
   return withRetry(async () => {
-    const response = await openai.chat.completions.create({
-      model: FAST_EXTRACTION_MODEL,
+    const response = await getClient().chat.completions.create({
+      model: getFastExtractionModel(),
       messages: [
         {
           role: 'system',
@@ -132,10 +141,10 @@ export async function extractContactWithAI(prompt: string): Promise<string> {
 export async function generateWithSystemPrompt(
   systemPrompt: string,
   userPrompt: string,
-  model: string = DEFAULT_JSON_MODEL
+  model: string = getDefaultJsonModel()
 ): Promise<string> {
   try {
-    const response = await openai.chat.completions.create({
+    const response = await getClient().chat.completions.create({
       model,
       messages: [
         { role: 'system', content: systemPrompt },

@@ -10,10 +10,12 @@ interface HeaderProps {
 }
 
 type AIStatus = 'connected' | 'disconnected' | 'no-key' | 'loading';
+type AIMode = 'openai' | 'lmstudio';
 
-function useAIStatus() {
+function useAIStatus(refreshKey: number) {
   const [status, setStatus] = useState<AIStatus>('loading');
   const [label, setLabel] = useState('');
+  const [mode, setMode] = useState<AIMode>('openai');
 
   useEffect(() => {
     const check = async () => {
@@ -21,12 +23,13 @@ function useAIStatus() {
         const res = await fetch('/api/ai-status');
         if (!res.ok) { setStatus('disconnected'); setLabel('error'); return; }
         const data = await res.json();
+        setMode(data.mode as AIMode);
         setStatus(data.status === 'connected' ? 'connected' : data.status);
         setLabel(
           data.mode === 'openai'
             ? `OpenAI · ${data.model ?? 'gpt-4o'}`
             : data.status === 'connected'
-              ? `LM Studio · ${data.model ?? 'local'}`
+              ? `LM Studio · ${(data.model as string)?.split('/').pop() ?? 'local'}`
               : 'LM Studio · offline'
         );
       } catch {
@@ -37,18 +40,42 @@ function useAIStatus() {
     check();
     const id = setInterval(check, 15000);
     return () => clearInterval(id);
-  }, []);
+  }, [refreshKey]);
 
-  return { status, label };
+  return { status, label, mode };
 }
 
 export default function Header({ onExport, companyCount }: HeaderProps) {
-  const ai = useAIStatus();
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [toggling, setToggling] = useState(false);
+  const ai = useAIStatus(refreshKey);
 
   const pillColor =
-    ai.status === 'connected'  ? { bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.35)', dot: '#22c55e', text: '#86efac' } :
-    ai.status === 'loading'    ? { bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.25)', dot: '#94a3b8', text: '#94a3b8' } :
-                                 { bg: 'rgba(239,68,68,0.10)', border: 'rgba(239,68,68,0.30)', dot: '#ef4444', text: '#fca5a5' };
+    ai.status === 'connected'
+      ? { bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.35)', dot: '#22c55e', text: '#86efac' }
+      : ai.status === 'loading'
+        ? { bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.25)', dot: '#94a3b8', text: '#94a3b8' }
+        : { bg: 'rgba(239,68,68,0.10)', border: 'rgba(239,68,68,0.30)', dot: '#ef4444', text: '#fca5a5' };
+
+  const toggleMode = async () => {
+    if (toggling) return;
+    setToggling(true);
+    const next: AIMode = ai.mode === 'lmstudio' ? 'openai' : 'lmstudio';
+    try {
+      await fetch('/api/lmstudio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: next }),
+      });
+      // Small delay then re-check status
+      await new Promise(r => setTimeout(r, 600));
+      setRefreshKey(k => k + 1);
+    } finally {
+      setToggling(false);
+    }
+  };
+
+  const isLM = ai.mode === 'lmstudio';
 
   return (
     <header
@@ -62,7 +89,6 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
 
         {/* ── Left: TB logo image + Grove badge ── */}
         <div className="flex items-center gap-4">
-          {/* Official TB logo — mix-blend-mode:screen knocks out white bg on dark surface */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/tb-logo.jpg"
@@ -91,7 +117,6 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
               </span>
             </div>
             <div className="flex items-center gap-1.5 mt-0.5">
-              {/* 🌳 deciduous tree */}
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--tb-blue)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="8" r="6"/>
                 <line x1="12" y1="14" x2="12" y2="21"/>
@@ -104,10 +129,55 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
           </div>
         </div>
 
-        {/* ── Right: AI status pill + counter + actions ── */}
+        {/* ── Right: AI toggle + status pill + counter + actions ── */}
         <div className="flex items-center gap-3">
 
-          {/* AI status — simple read-only pill, no modal */}
+          {/* AI mode toggle — LM Studio / OpenAI */}
+          <div
+            className="flex items-center gap-2"
+            style={{
+              background: 'var(--bg-card)',
+              border: '1px solid var(--border-mid)',
+              borderRadius: '999px',
+              padding: '3px 4px 3px 10px',
+            }}
+          >
+            <span style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+              {isLM ? 'LM Studio' : 'OpenAI'}
+            </span>
+            {/* Toggle switch */}
+            <button
+              onClick={toggleMode}
+              disabled={toggling}
+              title={`Switch to ${isLM ? 'OpenAI' : 'LM Studio'}`}
+              style={{
+                position: 'relative',
+                width: 36,
+                height: 20,
+                borderRadius: 999,
+                border: 'none',
+                cursor: toggling ? 'wait' : 'pointer',
+                background: isLM ? 'var(--tb-blue)' : 'var(--tb-orange)',
+                transition: 'background 0.2s',
+                flexShrink: 0,
+                opacity: toggling ? 0.6 : 1,
+              }}
+            >
+              <span style={{
+                position: 'absolute',
+                top: 2,
+                left: isLM ? 18 : 2,
+                width: 16,
+                height: 16,
+                borderRadius: '50%',
+                background: '#fff',
+                transition: 'left 0.2s',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+              }} />
+            </button>
+          </div>
+
+          {/* AI status pill */}
           <div
             style={{
               display: 'flex',
@@ -132,6 +202,7 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
             }} />
             {ai.status === 'loading' ? 'Checking AI…' : ai.label}
           </div>
+
           <div className="text-right pr-3 border-r" style={{ borderColor: 'var(--border)' }}>
             <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
               Companies tracked

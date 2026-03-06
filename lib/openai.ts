@@ -1,141 +1,129 @@
 // OpenAI integration for chat
 // Works with OpenAI API OR LM Studio local server (OpenAI-compatible)
 import OpenAI from 'openai';
-import { getLMStudioURL, getLMStudioActive } from './runtime-config';
 
-// Static env-based LM Studio mode (local dev)
-const envLMStudio = process.env.LMSTUDIO_MODE === 'true' || process.env.OPENAI_API_KEY === 'lm-studio';
-const envLMStudioBaseURL = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
+// LM Studio runs on localhost:1234 with OpenAI-compatible API
+// If OPENAI_API_KEY is set to "lm-studio" or LMSTUDIO_MODE is true, use local LM Studio
+const useLMStudio = process.env.LMSTUDIO_MODE === 'true' || process.env.OPENAI_API_KEY === 'lm-studio';
 
-// Resolve the active LM Studio URL — DB takes priority over env var
-// (DB is set by the tunnel script when ngrok connects)
-async function resolveLMConfig(): Promise<{ active: boolean; baseURL: string }> {
-  try {
-    const [dbActive, dbURL] = await Promise.all([getLMStudioActive(), getLMStudioURL()]);
-    if (dbActive && dbURL) return { active: true, baseURL: dbURL };
-  } catch {
-    // DB unavailable — fall through to env var
-  }
-  return { active: envLMStudio, baseURL: envLMStudioBaseURL };
-}
+// Allow overriding the LM Studio base URL via env var (useful when running on a different machine/port)
+const lmStudioBaseURL = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
 
-// Lazy client factories
-function makeLMStudioClient(baseURL: string) {
-  return new OpenAI({ apiKey: 'lm-studio', baseURL });
-}
+const openai = new OpenAI({
+  apiKey: useLMStudio ? 'lm-studio' : process.env.OPENAI_API_KEY,
+  baseURL: useLMStudio ? lmStudioBaseURL : 'https://api.openai.com/v1',
+});
 
-function getOpenAIClient() {
-  return new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY || 'placeholder-set-at-runtime',
-    baseURL: 'https://api.openai.com/v1',
-  });
-}
+// Full research uses gpt-4o for best quality
+// Contact extraction uses gpt-4o-mini — 10x cheaper, just as good for extraction tasks
+const DEFAULT_CHAT_MODEL = useLMStudio ? 'openai/gpt-oss-20b' : 'gpt-4o';
+const DEFAULT_JSON_MODEL = useLMStudio ? 'openai/gpt-oss-20b' : 'gpt-4o';
+export const FAST_EXTRACTION_MODEL = useLMStudio ? 'openai/gpt-oss-20b' : 'gpt-4o-mini';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
-/** Fetch the first loaded model from LM Studio so we never hardcode the name */
-async function getLMStudioModel(baseURL: string): Promise<string> {
-  try {
-    const res = await fetch(`${baseURL}/models`, { signal: AbortSignal.timeout(3000) });
-    const data = await res.json() as { data?: { id: string }[] };
-    return data?.data?.[0]?.id ?? 'local-model';
-  } catch {
-    return 'local-model';
+// ── Retry wrapper with exponential backoff for 429 rate limits ────────────────
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts = 4,
+  baseDelayMs = 5000
+): Promise<T> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      const is429 = msg.includes('429') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('Rate limit');
+      if (is429 && attempt < maxAttempts) {
+        const delay = baseDelayMs * Math.pow(2, attempt - 1); // 5s, 10s, 20s
+        console.warn(`⏳ OpenAI rate limited (429) — retrying in ${delay / 1000}s (attempt ${attempt}/${maxAttempts})`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw error;
+    }
   }
-}
-
-/** Pick the right client based on DB config (tunnel URL) or env var fallback */
-async function getActiveClient(): Promise<{ client: OpenAI; useLM: boolean; model: string }> {
-  const { active, baseURL } = await resolveLMConfig();
-  if (active) {
-    const model = await getLMStudioModel(baseURL);
-    return { client: makeLMStudioClient(baseURL), useLM: true, model };
-  }
-  return { client: getOpenAIClient(), useLM: false, model: 'gpt-4o' };
+  throw new Error('Max retry attempts exceeded');
 }
 
 /**
- * Chat with Grove's AI
+ * Chat with OpenAI GPT-4o
  */
 export async function chatWithOpenAI(
   messages: ChatMessage[],
-  model?: string
+  model: string = DEFAULT_CHAT_MODEL
 ): Promise<string> {
-  const { client, useLM, model: defaultModel } = await getActiveClient();
-  const mdl = model ?? defaultModel;
-  try {
-    const response = await client.chat.completions.create({
-      model: mdl,
+  return withRetry(async () => {
+    const response = await openai.chat.completions.create({
+      model,
       messages,
       temperature: 0.2,
       max_tokens: 2000,
     });
     return response.choices[0]?.message?.content || 'No response';
-  } catch (error: unknown) {
-    if (useLM) {
-      console.warn('LM Studio unreachable — falling back to OpenAI gpt-4o');
-      try {
-        const fallback = await getOpenAIClient().chat.completions.create({
-          model: 'gpt-4o', messages, temperature: 0.2, max_tokens: 2000,
-        });
-        return fallback.choices[0]?.message?.content || 'No response';
-      } catch (fe) {
-        throw new Error(`OpenAI fallback failed: ${fe instanceof Error ? fe.message : fe}`);
-      }
-    }
-    const errMsg = error instanceof Error ? error.message : JSON.stringify(error);
-    throw new Error(`OpenAI request failed: ${errMsg}`);
-  }
+  });
 }
 
 /**
- * Generate structured JSON response — used for company research
+ * Generate structured JSON response — full research (gpt-4o)
  */
 export async function generateWithOpenAI(
   prompt: string,
-  model?: string
+  model: string = DEFAULT_JSON_MODEL
 ): Promise<string> {
-  const { client, useLM, model: defaultModel } = await getActiveClient();
-  const mdl = model ?? defaultModel;
+  return withRetry(async () => {
+    const response = await openai.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: 'system',
+          content: `You are a strict research assistant that outputs only verified, factual data as JSON.
 
-  const messages = [
-    {
-      role: 'system' as const,
-      content: `You are a company research assistant helping build a sponsor pipeline for a tech conference. You output ONLY valid JSON with no markdown, no code fences, and no prose outside the JSON object.
+🚨 ABSOLUTE RULES — NEVER VIOLATE:
+- NEVER invent, guess, or hallucinate: names, LinkedIn URLs, email addresses, job titles, company details, or events
+- ONLY use data that is explicitly present in the provided search results and snippets
+- If a field cannot be confirmed from the provided data, output "Not found" — do not fill it with assumptions
+- LinkedIn URLs must be copied character-for-character from search results — never construct them
+- Contact names must come directly from search result titles/snippets — never infer them
+- A "Not found" answer is always correct and preferred over an invented one
 
-RULES:
-- For well-known companies (e.g. Microsoft, Google, AWS, Salesforce), use your training knowledge to fill in industry, company_size, website, and why_good_fit — you know these facts
-- For contact names and LinkedIn URLs: ONLY use what is explicitly in the provided search results. Never construct or guess a LinkedIn URL — copy it exactly or output "Not found"
-- For emails: use what was found by the scraper, otherwise "Not found"
-- sponsorship_likelihood_score must be a realistic integer 1–10 based on the company's tech focus and scale
-- why_good_fit must be 3 bullet points explaining why THIS company fits a tech conference — use what you know about the company
-- Output ONLY the JSON object starting with { and ending with }`,
-    },
-    { role: 'user' as const, content: prompt },
-  ];
-
-  const makeRequest = (c: OpenAI, m: string) =>
-    c.chat.completions.create({ model: m, messages, temperature: 0.3, max_tokens: 4000 });
-
-  try {
-    const response = await makeRequest(client, mdl);
+You output ONLY valid JSON. No explanations, no markdown, no prose outside the JSON object.`,
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 8000,
+    });
     return response.choices[0]?.message?.content || '';
-  } catch (error: unknown) {
-    if (useLM) {
-      console.warn('LM Studio unreachable — falling back to OpenAI gpt-4o for JSON generation');
-      try {
-        const fallback = await makeRequest(getOpenAIClient(), 'gpt-4o');
-        return fallback.choices[0]?.message?.content || '';
-      } catch (fe) {
-        throw new Error(`OpenAI fallback failed: ${fe instanceof Error ? fe.message : fe}`);
-      }
-    }
-    const errMsg = error instanceof Error ? error.message : JSON.stringify(error);
-    throw new Error(`OpenAI generation failed: ${errMsg}`);
-  }
+  });
+}
+
+/**
+ * Fast contact extraction — uses gpt-4o-mini (cheaper + faster, same quality for extraction)
+ * Used by findContactForCompany() to avoid burning gpt-4o quota on simple extraction tasks
+ */
+export async function extractContactWithAI(prompt: string): Promise<string> {
+  return withRetry(async () => {
+    const response = await openai.chat.completions.create({
+      model: FAST_EXTRACTION_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: `You extract contact information from search results. Output ONLY valid JSON. Never invent data — only use what appears in the provided search results.`,
+        },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.0,
+      max_tokens: 500,
+    });
+    return response.choices[0]?.message?.content || '';
+  });
 }
 
 /**
@@ -144,13 +132,11 @@ RULES:
 export async function generateWithSystemPrompt(
   systemPrompt: string,
   userPrompt: string,
-  model?: string
+  model: string = DEFAULT_JSON_MODEL
 ): Promise<string> {
-  const { client, model: defaultModel } = await getActiveClient();
-  const mdl = model ?? defaultModel;
   try {
-    const response = await client.chat.completions.create({
-      model: mdl,
+    const response = await openai.chat.completions.create({
+      model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
@@ -161,6 +147,7 @@ export async function generateWithSystemPrompt(
     return response.choices[0]?.message?.content || '';
   } catch (error: unknown) {
     const errMsg = error instanceof Error ? error.message : JSON.stringify(error);
+    console.error('OpenAI generation error:', errMsg);
     throw new Error(`OpenAI generation failed: ${errMsg}`);
   }
 }

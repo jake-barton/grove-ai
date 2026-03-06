@@ -1,5 +1,5 @@
 // AI Agent that orchestrates web search and research tasks
-import { generateWithOpenAI } from '@/lib/openai';
+import { generateWithOpenAI, extractContactWithAI } from '@/lib/openai';
 import { Company } from '@/lib/types';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
@@ -1067,18 +1067,35 @@ If NO credible current contact found, return:
   };
 
   try {
-    const aiRaw = await generateWithOpenAI(prompt);
+    const aiRaw = await extractContactWithAI(prompt);
     const jsonMatch = aiRaw.replace(/```json\n?/g, '').replace(/```\n?/g, '').match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
-      // Validate LinkedIn URL — must appear in actual search results
+
+      // Validate LinkedIn URL — check link fields AND snippet/title text (LinkedIn URLs appear in both)
       if (parsed.contact_linkedin) {
         const liUrl = validateLinkedInUrl(parsed.contact_linkedin);
-        const fromHunter = hunterResults.some(h => h.linkedin?.toLowerCase().includes(parsed.contact_linkedin?.toLowerCase()));
-        const foundInSearch = liUrl && (fromHunter || [...allUrls].some(u => u && u.includes(liUrl.toLowerCase())));
-        parsed.contact_linkedin = foundInSearch ? liUrl : null;
-        if (!foundInSearch) console.warn(`⚠️ Contact LinkedIn not in search results — cleared`);
+        if (liUrl) {
+          const liPath = liUrl.toLowerCase().split('/in/')[1]?.split('/')[0] || '';
+          const fromHunter = hunterResults.some(h =>
+            h.linkedin?.toLowerCase().includes(liPath)
+          );
+          // Check link fields
+          const inLinkFields = [...allUrls].some(u => u && u.includes(liPath));
+          // Check snippet + title text (LinkedIn slugs appear in snippets even when link is the page URL)
+          const inSnippetText = allResults.some(r =>
+            (`${r.title || ''} ${r.snippet || ''}`).toLowerCase().includes(liPath)
+          );
+          const foundInSearch = fromHunter || inLinkFields || inSnippetText;
+          parsed.contact_linkedin = foundInSearch ? liUrl : null;
+          if (!foundInSearch) {
+            console.warn(`⚠️ Contact LinkedIn slug "${liPath}" not found in results — cleared`);
+          }
+        } else {
+          parsed.contact_linkedin = null;
+        }
       }
+
       // Validate name
       parsed.contact_name = validateContactName(parsed.contact_name) || null;
       result = parsed;

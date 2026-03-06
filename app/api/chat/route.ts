@@ -269,7 +269,8 @@ export async function POST(request: NextRequest) {
           }
 
           if (i < targets.length - 1) {
-            await new Promise(r => setTimeout(r, 2500));
+            emit({ type: 'step', text: `Pausing between searches to respect rate limits…`, icon: '⏳' });
+            await new Promise(r => setTimeout(r, 4000));
           }
         }
 

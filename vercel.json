@@ -1,10 +1,5 @@
 {
-  "functions": {
-    "app/api/chat/route.ts": {
-      "maxDuration": 300
-    },
-    "app/api/companies/route.ts": {
-      "maxDuration": 60
-    }
-  }
+  "buildCommand": "npx prisma generate && next build",
+  "framework": "nextjs",
+  "regions": ["iad1"]
 }

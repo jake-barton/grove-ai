@@ -1,9 +1,9 @@
+// Legacy route — kept for backward compat, now proxies to /api/settings
 import { NextRequest, NextResponse } from 'next/server';
 import { getAIMode, setAIMode } from '@/lib/ai-mode';
 
 export async function GET() {
-  const mode = getAIMode();
-  return NextResponse.json({ mode });
+  return NextResponse.json({ mode: getAIMode() });
 }
 
 export async function POST(req: NextRequest) {

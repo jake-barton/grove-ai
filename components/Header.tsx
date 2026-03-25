@@ -1,8 +1,8 @@
 // Header — TechBirmingham × Grove dark redesign
 'use client';
 
-import { useEffect, useState } from 'react';
-import { ExternalLink, Database } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ExternalLink, Database, Settings, X, Eye, EyeOff } from 'lucide-react';
 
 interface HeaderProps {
   onExport: () => void;
@@ -16,6 +16,7 @@ function useAIStatus(refreshKey: number) {
   const [status, setStatus] = useState<AIStatus>('loading');
   const [label, setLabel] = useState('');
   const [mode, setMode] = useState<AIMode>('openai');
+  const [keySource, setKeySource] = useState<'runtime' | 'env' | 'none'>('env');
 
   useEffect(() => {
     const check = async () => {
@@ -24,6 +25,7 @@ function useAIStatus(refreshKey: number) {
         if (!res.ok) { setStatus('disconnected'); setLabel('error'); return; }
         const data = await res.json();
         setMode(data.mode as AIMode);
+        setKeySource(data.keySource ?? 'env');
         setStatus(data.status === 'connected' ? 'connected' : data.status);
         setLabel(
           data.mode === 'openai'
@@ -42,13 +44,33 @@ function useAIStatus(refreshKey: number) {
     return () => clearInterval(id);
   }, [refreshKey]);
 
-  return { status, label, mode };
+  return { status, label, mode, keySource };
 }
 
 export default function Header({ onExport, companyCount }: HeaderProps) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [toggling, setToggling] = useState(false);
   const ai = useAIStatus(refreshKey);
+
+  // Settings popover state
+  const [showSettings, setShowSettings] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [savingKey, setSavingKey] = useState(false);
+  const [keyMsg, setKeyMsg] = useState('');
+  const settingsRef = useRef<HTMLDivElement>(null);
+
+  // Close popover on outside click
+  useEffect(() => {
+    if (!showSettings) return;
+    const handler = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setShowSettings(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showSettings]);
 
   const pillColor =
     ai.status === 'connected'
@@ -62,12 +84,11 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
     setToggling(true);
     const next: AIMode = ai.mode === 'lmstudio' ? 'openai' : 'lmstudio';
     try {
-      await fetch('/api/lmstudio', {
+      await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: next }),
       });
-      // Small delay then re-check status
       await new Promise(r => setTimeout(r, 600));
       setRefreshKey(k => k + 1);
     } finally {
@@ -75,11 +96,36 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
     }
   };
 
+  const saveApiKey = async () => {
+    setSavingKey(true);
+    setKeyMsg('');
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: apiKeyInput.trim() }),
+      });
+      if (res.ok) {
+        setKeyMsg(apiKeyInput.trim() === '' ? 'Cleared — using default key' : 'Key saved ✓');
+        setApiKeyInput('');
+        setRefreshKey(k => k + 1);
+      } else {
+        const err = await res.json();
+        setKeyMsg(err.error ?? 'Failed to save');
+      }
+    } catch {
+      setKeyMsg('Network error');
+    } finally {
+      setSavingKey(false);
+      setTimeout(() => setKeyMsg(''), 3000);
+    }
+  };
+
   const isLM = ai.mode === 'lmstudio';
 
   return (
     <header
-      className="scan-line border-b px-6 py-0 shrink-0 relative overflow-hidden"
+      className="scan-line border-b px-6 py-0 shrink-0 relative overflow-visible"
       style={{
         background: 'var(--bg-elevated)',
         borderColor: 'var(--border-mid)',
@@ -203,6 +249,163 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
             {ai.status === 'loading' ? 'Checking AI…' : ai.label}
           </div>
 
+          {/* ── Settings gear — API key popover ── */}
+          <div className="relative" ref={settingsRef}>
+            <button
+              onClick={() => { setShowSettings(s => !s); setKeyMsg(''); }}
+              title="Settings — API key"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 32,
+                height: 32,
+                borderRadius: '8px',
+                border: '1px solid var(--border-mid)',
+                background: showSettings ? 'var(--bg-card)' : 'transparent',
+                color: showSettings ? 'var(--tb-blue)' : 'var(--text-secondary)',
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => {
+                (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)';
+                (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--tb-blue)';
+              }}
+              onMouseLeave={e => {
+                if (!showSettings) {
+                  (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-secondary)';
+                  (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-mid)';
+                }
+              }}
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+
+            {showSettings && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 10px)',
+                  right: 0,
+                  width: 320,
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid var(--border-mid)',
+                  borderRadius: '12px',
+                  padding: '16px',
+                  boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+                  zIndex: 100,
+                }}
+              >
+                {/* Header */}
+                <div className="flex items-center justify-between mb-4">
+                  <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                    Settings
+                  </span>
+                  <button onClick={() => setShowSettings(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex' }}>
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Current key source */}
+                <div
+                  style={{
+                    background: 'var(--bg-card)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                    marginBottom: '12px',
+                    fontSize: '0.72rem',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Active key: </span>
+                  {ai.keySource === 'runtime'
+                    ? <span style={{ color: 'var(--tb-orange)' }}>Custom key (runtime)</span>
+                    : ai.keySource === 'env'
+                      ? <span style={{ color: '#86efac' }}>Default key (built-in)</span>
+                      : <span style={{ color: '#fca5a5' }}>No key configured</span>
+                  }
+                </div>
+
+                {/* API key input */}
+                <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                  OpenAI API Key
+                </label>
+                <div style={{ position: 'relative', marginBottom: '8px' }}>
+                  <input
+                    type={showKey ? 'text' : 'password'}
+                    value={apiKeyInput}
+                    onChange={e => setApiKeyInput(e.target.value)}
+                    placeholder="sk-…  (leave blank to use default)"
+                    style={{
+                      width: '100%',
+                      background: 'var(--bg-card)',
+                      border: '1px solid var(--border-mid)',
+                      borderRadius: '8px',
+                      padding: '8px 36px 8px 10px',
+                      fontSize: '0.75rem',
+                      color: 'var(--text-primary)',
+                      outline: 'none',
+                      fontFamily: 'monospace',
+                      boxSizing: 'border-box',
+                    }}
+                    onFocus={e => (e.currentTarget.style.borderColor = 'var(--tb-blue)')}
+                    onBlur={e => (e.currentTarget.style.borderColor = 'var(--border-mid)')}
+                    onKeyDown={e => { if (e.key === 'Enter') saveApiKey(); }}
+                  />
+                  <button
+                    onClick={() => setShowKey(v => !v)}
+                    style={{
+                      position: 'absolute',
+                      right: 8,
+                      top: '50%',
+                      transform: 'translateY(-50%)',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--text-secondary)',
+                      display: 'flex',
+                      padding: 0,
+                    }}
+                  >
+                    {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+
+                {/* Save button */}
+                <button
+                  onClick={saveApiKey}
+                  disabled={savingKey}
+                  style={{
+                    width: '100%',
+                    padding: '8px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    background: 'var(--tb-orange)',
+                    color: '#fff',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    cursor: savingKey ? 'wait' : 'pointer',
+                    opacity: savingKey ? 0.6 : 1,
+                    transition: 'opacity 0.15s',
+                  }}
+                >
+                  {savingKey ? 'Saving…' : apiKeyInput.trim() === '' ? 'Clear Custom Key' : 'Save Key'}
+                </button>
+
+                {keyMsg && (
+                  <p style={{ marginTop: '8px', fontSize: '0.7rem', color: keyMsg.includes('✓') || keyMsg.includes('Cleared') ? '#86efac' : '#fca5a5', textAlign: 'center' }}>
+                    {keyMsg}
+                  </p>
+                )}
+
+                <p style={{ marginTop: '10px', fontSize: '0.65rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                  Key is stored in memory for this session only. Clearing it restores the built-in default key.
+                </p>
+              </div>
+            )}
+          </div>
+
           <div className="text-right pr-3 border-r" style={{ borderColor: 'var(--border)' }}>
             <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
               Companies tracked
@@ -256,3 +459,4 @@ export default function Header({ onExport, companyCount }: HeaderProps) {
     </header>
   );
 }
+

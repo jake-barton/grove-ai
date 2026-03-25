@@ -1,7 +1,7 @@
 // OpenAI integration for chat
 // Works with OpenAI API OR LM Studio local server (OpenAI-compatible)
 import OpenAI from 'openai';
-import { getAIMode } from '@/lib/ai-mode';
+import { getAIMode, getRuntimeApiKey } from '@/lib/ai-mode';
 
 function isLMStudio() {
   return getAIMode() === 'lmstudio';
@@ -17,7 +17,6 @@ async function getActiveLMStudioModel(): Promise<string> {
     const res = await fetch(`${lmStudioBaseURL}/models`, { signal: AbortSignal.timeout(2000) });
     if (res.ok) {
       const data = await res.json();
-      // Pick first model that is actually loaded (not just listed)
       const model = data?.data?.[0]?.id;
       if (model) {
         _cachedLMModel = model;
@@ -28,10 +27,15 @@ async function getActiveLMStudioModel(): Promise<string> {
   return 'local-model';
 }
 
+/** Returns the OpenAI API key to use — runtime key (user-supplied) takes priority */
+function getOpenAIKey(): string {
+  return getRuntimeApiKey() || process.env.OPENAI_API_KEY || '';
+}
+
 function getClient(forceOpenAI = false) {
   const useLM = !forceOpenAI && isLMStudio();
   return new OpenAI({
-    apiKey: useLM ? 'lm-studio' : process.env.OPENAI_API_KEY,
+    apiKey: useLM ? 'lm-studio' : getOpenAIKey(),
     baseURL: useLM ? lmStudioBaseURL : 'https://api.openai.com/v1',
   });
 }

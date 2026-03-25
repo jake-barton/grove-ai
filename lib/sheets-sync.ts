@@ -34,7 +34,7 @@ const WHITE        = { red: 1,    green: 1,    blue: 1    };
 let sheetsInstance: sheets_v4.Sheets | null = null;
 
 async function getSheetsClient(): Promise<sheets_v4.Sheets | null> {
-  if (sheetsInstance) return sheetsInstance;
+  // Don't cache — always create fresh so new env vars take effect without cold start
   const rawKey = process.env.GOOGLE_SHEETS_PRIVATE_KEY;
   const email = process.env.GOOGLE_SHEETS_CLIENT_EMAIL;
   if (!rawKey || !email) {
@@ -59,7 +59,7 @@ async function getSheetsClient(): Promise<sheets_v4.Sheets | null> {
   }
   const auth = new google.auth.JWT({ email, key, scopes: SCOPES });
   sheetsInstance = google.sheets({ version: 'v4', auth });
-  console.log('✅ Google Sheets API initialized');
+  console.log('✅ Google Sheets API initialized, email:', email);
   return sheetsInstance;
 }
 

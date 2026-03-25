@@ -381,7 +381,7 @@ export async function syncCompanyToSheets(company: Company): Promise<boolean> {
 }
 
 /** Delete a company row by company name */
-export async function deleteCompanyFromSheets(companyId: string): Promise<boolean> {
+export async function deleteCompanyFromSheets(companyName: string): Promise<boolean> {
   const api = await getSheetsClient();
   if (!api) return false;
   const spreadsheetId = await getOrCreateSpreadsheet();
@@ -390,9 +390,9 @@ export async function deleteCompanyFromSheets(companyId: string): Promise<boolea
   try {
     const existing = await api.spreadsheets.values.get({ spreadsheetId, range: 'A:A' });
     const names = existing.data.values?.map((r) => String(r[0] ?? '')) ?? [];
-    // Try matching by ID (first col used to be ID) or company name
-    let rowIdx = names.findIndex((n, i) => i > 0 && n === companyId);
-    if (rowIdx < 0) rowIdx = names.findIndex((n, i) => i > 0 && n.toLowerCase().includes(companyId.toLowerCase()));
+    // Exact match first, then case-insensitive partial match
+    let rowIdx = names.findIndex((n, i) => i > 0 && n === companyName);
+    if (rowIdx < 0) rowIdx = names.findIndex((n, i) => i > 0 && n.toLowerCase().includes(companyName.toLowerCase()));
 
     if (rowIdx >= 0) {
       await api.spreadsheets.batchUpdate({
@@ -405,9 +405,10 @@ export async function deleteCompanyFromSheets(companyId: string): Promise<boolea
           }],
         },
       });
-      console.log(`✅ Deleted row ${rowIdx + 1} from spreadsheet`);
+      console.log(`✅ Deleted row ${rowIdx + 1} (${companyName}) from spreadsheet`);
       return true;
     }
+    console.warn(`⚠️ Could not find "${companyName}" in spreadsheet to delete`);
     return false;
   } catch (error) {
     console.error(`❌ Error deleting from sheets:`, error);

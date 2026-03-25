@@ -194,12 +194,16 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Company ID required' }, { status: 400 });
     }
 
+    // Fetch name BEFORE deleting so sheets can find the row by company name
+    const existing = await prisma.company.findUnique({ where: { id }, select: { company_name: true } });
     await prisma.company.delete({ where: { id } });
 
-    try {
-      await deleteCompanyFromSheets(id);
-    } catch (sheetError) {
-      console.error('⚠️ Google Sheets delete error:', sheetError);
+    if (existing?.company_name) {
+      try {
+        await deleteCompanyFromSheets(existing.company_name);
+      } catch (sheetError) {
+        console.error('⚠️ Google Sheets delete error:', sheetError);
+      }
     }
 
     return NextResponse.json({ success: true });

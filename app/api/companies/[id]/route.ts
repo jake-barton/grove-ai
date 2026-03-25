@@ -19,6 +19,8 @@ function toCompany(row: Record<string, unknown>): Company {
     bounced_emails: (row.bounced_emails as string[]) || [],
     previously_sponsored: row.previously_sponsored as boolean,
     previous_events: (row.previous_events as string[]) || [],
+    what_they_sponsored: (row.what_they_sponsored as string) || undefined,
+    why_good_fit: (row.why_good_fit as string) || undefined,
     industry: (row.industry as string) || undefined,
     company_size: (row.company_size as string) || undefined,
     website: (row.website as string) || undefined,
@@ -58,8 +60,12 @@ export async function DELETE(
   try {
     const { id } = await context.params;
     console.log('DELETE /api/companies/' + id);
+    // Fetch the company name BEFORE deleting so we can remove it from sheets by name
+    const existing = await prisma.company.findUnique({ where: { id }, select: { company_name: true } });
     await prisma.company.delete({ where: { id } });
-    try { await deleteCompanyFromSheets(id); } catch (e) { console.error('Sheets delete error', e); }
+    if (existing?.company_name) {
+      try { await deleteCompanyFromSheets(existing.company_name); } catch (e) { console.error('Sheets delete error', e); }
+    }
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('DELETE error:', error);

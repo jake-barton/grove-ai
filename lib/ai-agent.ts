@@ -218,13 +218,52 @@ export async function validateEmail(email: string): Promise<boolean> {
   }
 }
 
+// Helper: run searches in small concurrent batches with a pause between batches
+// This avoids hammering Serper with 10 simultaneous requests (which causes rate-limit silent failures)
+async function batchedSearches(queries: string[], batchSize = 3, delayMs = 400): Promise<SearchResult[][]> {
+  const results: SearchResult[][] = new Array(queries.length).fill([]);
+  for (let i = 0; i < queries.length; i += batchSize) {
+    const batch = queries.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(q => searchWeb(q)));
+    for (let j = 0; j < batch.length; j++) {
+      results[i + j] = batchResults[j];
+    }
+    if (i + batchSize < queries.length) {
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  return results;
+}
+
 // Main AI research agent
 export async function researchCompany(companyName: string): Promise<Company> {
   const currentYear = new Date().getFullYear();
   const prevYear = currentYear - 1;
 
-  // Run all searches + enrichment in parallel
-  console.log(`🚀 Launching parallel searches + enrichment for "${companyName}"…`);
+  // Run searches in batches of 3 with 400ms gaps to avoid Serper rate-limit silent failures
+  console.log(`🚀 Launching batched searches for "${companyName}"…`);
+  const searchQueries = [
+    // 1: Company website
+    `${companyName} official website`,
+    // 2: Sponsorship history
+    `"${companyName}" tech conference sponsorship ${currentYear} OR ${prevYear}`,
+    // 3: LinkedIn decision-makers
+    `"${companyName}" (CMO OR "VP Marketing" OR "Head of Sponsorships" OR "Director of Partnerships") site:linkedin.com -former -"ex-" -left`,
+    // 4: Recent company initiatives
+    `"${companyName}" tech community sponsorship developer investment ${currentYear}`,
+    // 5: LinkedIn company page
+    `site:linkedin.com/company "${companyName}"`,
+    // 6: LinkedIn people — senior marketing/partnerships roles
+    `site:linkedin.com/in "${companyName}" (CMO OR "VP Marketing" OR "Director of Sponsorships" OR "Head of Partnerships") -"former" -"ex-"`,
+    // 7: Recent news/PR
+    `"${companyName}" (CMO OR "VP Marketing" OR "Head of Partnerships") ${currentYear} news interview`,
+    // 8: Named exec searches — finds people actually quoted/named in press
+    `"${companyName}" (CMO OR "VP of Marketing" OR "Head of Sponsorships") ${currentYear} -site:linkedin.com`,
+    // 9: Press quotes — finds named people actively speaking for the company right now
+    `"${companyName}" sponsorship OR partnership "${currentYear}" "said" OR "announced"`,
+  ];
+
+  const searchResultsArr = await batchedSearches(searchQueries, 3, 500);
   const [
     companySearchResults,
     sponsorshipSearchResults,
@@ -232,36 +271,38 @@ export async function researchCompany(companyName: string): Promise<Company> {
     initiativesSearchResults,
     linkedInCompanyResults,
     linkedInPeopleResults,
-    linkedInCurrentResults,
     recentNewsResults,
-    // Extra targeted searches for real-world contact signals
     execSearchResults,
     pressQuoteResults,
-  ] = await Promise.all([
-    // 1: Company website
-    searchWeb(`${companyName} official website ${currentYear} OR ${prevYear}`),
-    // 2: Sponsorship history
-    searchWeb(`"${companyName}" tech conference sponsorship ${currentYear} OR ${prevYear} OR "2025" OR "2026"`),
-    // 3: LinkedIn decision-makers
-    searchWeb(`"${companyName}" (CMO OR "Chief Marketing Officer" OR "VP Marketing" OR "Head of Sponsorships" OR "Director of Partnerships") site:linkedin.com ${currentYear} -former -"ex-" -left -departed`),
-    // 4: Recent company initiatives
-    searchWeb(`"${companyName}" tech community sponsorship diversity investment ${currentYear} OR ${prevYear}`),
-    // 5: LinkedIn company page
-    searchWeb(`site:linkedin.com/company "${companyName}"`),
-    // 6: LinkedIn people — senior marketing/partnerships roles
-    searchWeb(`site:linkedin.com/in "${companyName}" (CMO OR "VP Marketing" OR "Director of Sponsorships" OR "Head of Partnerships" OR "Community Manager") -"former" -"ex-" -left`),
-    // 7: LinkedIn people with current-year signals
-    searchWeb(`site:linkedin.com/in "${companyName}" (marketing OR sponsorships OR partnerships) "${currentYear}" -former -"ex-"`),
-    // 8: Recent news/PR
-    searchWeb(`"${companyName}" (CMO OR "VP Marketing" OR "Head of Partnerships" OR "sponsorship") ${currentYear} news announcement interview`),
-    // 9: Named exec searches — finds people actually quoted/named in press
-    searchWeb(`"${companyName}" (CMO OR "Chief Marketing Officer" OR "VP of Marketing" OR "Head of Sponsorships" OR "Director of Partnerships") ${currentYear} -site:linkedin.com`),
-    // 10: Press quotes — finds named people actively speaking for the company right now
-    searchWeb(`"${companyName}" sponsor OR partnership announcement "${currentYear}" "said" OR "according to" OR "commented" OR "announced"`),
-  ]);
-  console.log(`✅ All 10 searches complete for "${companyName}"`);
+  ] = searchResultsArr;
+  // Keep linkedInCurrentResults as alias to peopleResults for prompt compatibility
+  const linkedInCurrentResults = linkedInPeopleResults;
+  console.log(`✅ All searches complete for "${companyName}" (${searchResultsArr.reduce((s, r) => s + r.length, 0)} total results)`);
 
-  const companyWebsite = companySearchResults[0]?.link || '';
+  // Pick the best company website — prefer actual company domain over Wikipedia/news sites
+  const NON_COMPANY_DOMAINS = new Set([
+    'wikipedia.org', 'wikimedia.org', 'britannica.com', 'crunchbase.com',
+    'bloomberg.com', 'forbes.com', 'techcrunch.com', 'reuters.com', 'cnbc.com',
+    'businessinsider.com', 'fortune.com', 'wsj.com', 'nytimes.com', 'theverge.com',
+    'wired.com', 'zdnet.com', 'venturebeat.com', 'cnet.com', 'engadget.com',
+    'linkedin.com', 'twitter.com', 'x.com', 'facebook.com', 'instagram.com',
+    'youtube.com', 'glassdoor.com', 'indeed.com', 'quora.com', 'reddit.com',
+    'g2.com', 'capterra.com', 'trustpilot.com', 'producthunt.com',
+    'zoominfo.com', 'dnb.com', 'apollo.io',
+  ]);
+  const companyWebsite = (() => {
+    for (const result of companySearchResults) {
+      if (!result.link) continue;
+      try {
+        const host = new URL(result.link).hostname.replace(/^www\./, '');
+        if (!NON_COMPANY_DOMAINS.has(host) && !NON_COMPANY_DOMAINS.has(host.split('.').slice(-2).join('.'))) {
+          return result.link;
+        }
+      } catch { /* skip */ }
+    }
+    return companySearchResults[0]?.link || '';
+  })();
+  console.log(`🌐 Company website: ${companyWebsite || 'not found'}`);
 
   // Extract domain from website for Hunter lookup
   let websiteDomain = '';
@@ -982,30 +1023,29 @@ export async function findContactForCompany(
   const currentYear = new Date().getFullYear();
   console.log(`\n🎯 Deep contact search for "${companyName}"…`);
 
-  // Fire 8 highly targeted searches in parallel
-  const [
-    s1, s2, s3, s4, s5, s6, s7, s8
-  ] = await Promise.all([
+  // Fire searches in batches of 3 to avoid Serper rate-limit silent failures
+  const contactQueries = [
     // LinkedIn profiles — CMO / VP Marketing at this company right now
-    searchWeb(`site:linkedin.com/in "${companyName}" (CMO OR "Chief Marketing Officer" OR "VP of Marketing" OR "VP Marketing") -former -"ex-" -left -departed`),
+    `site:linkedin.com/in "${companyName}" (CMO OR "Chief Marketing Officer" OR "VP of Marketing" OR "VP Marketing") -former -"ex-" -left -departed`,
     // LinkedIn profiles — Partnerships / Sponsorships
-    searchWeb(`site:linkedin.com/in "${companyName}" ("Head of Partnerships" OR "Director of Partnerships" OR "Head of Sponsorships" OR "Sponsorship Manager" OR "Community Partnerships") -former -"ex-"`),
-    // LinkedIn profiles — current year signal
-    searchWeb(`site:linkedin.com/in "${companyName}" (marketing OR partnerships OR sponsorships) "${currentYear}" -former -"ex-"`),
+    `site:linkedin.com/in "${companyName}" ("Head of Partnerships" OR "Director of Partnerships" OR "Head of Sponsorships" OR "Sponsorship Manager") -former -"ex-"`,
     // Named in press — people quoted or credited for the company in news
-    searchWeb(`"${companyName}" ("CMO" OR "Chief Marketing Officer" OR "VP Marketing" OR "Head of Partnerships") "${currentYear}" said OR announced OR commented -site:linkedin.com`),
-    // Conference/event sponsorship contacts — often named in event pages
-    searchWeb(`"${companyName}" sponsorship contact OR "sponsorship team" OR "partnerships team" "${currentYear}"`),
-    // Apollo / ZoomInfo / Clearbit leaks (public data aggregators often index company contacts)
-    searchWeb(`"${companyName}" (CMO OR "VP Marketing" OR "Head of Partnerships") email site:apollo.io OR site:rocketreach.co OR site:contactout.com OR site:signalhire.com`),
-    // Official company about/team pages
-    searchWeb(`"${companyName}" "head of" OR "director of" OR "vice president" marketing OR partnerships site:${companyName.toLowerCase().replace(/[^a-z0-9]/g, '')}.com OR "${companyName.toLowerCase()}.com"`),
+    `"${companyName}" ("CMO" OR "Chief Marketing Officer" OR "VP Marketing" OR "Head of Partnerships") "${currentYear}" said OR announced -site:linkedin.com`,
+    // Conference/event sponsorship contacts
+    `"${companyName}" sponsorship contact OR "sponsorship team" OR "partnerships team" "${currentYear}"`,
+    // Apollo / ZoomInfo data aggregators
+    `"${companyName}" (CMO OR "VP Marketing" OR "Head of Partnerships") email site:apollo.io OR site:rocketreach.co OR site:contactout.com`,
     // Twitter/X — often the fastest way to find who speaks for a company publicly
-    searchWeb(`site:twitter.com OR site:x.com "${companyName}" (CMO OR "VP Marketing" OR "Head of Partnerships" OR "Director of Sponsorships") "${currentYear}"`),
-  ]);
+    `site:twitter.com OR site:x.com "${companyName}" (CMO OR "VP Marketing" OR "Head of Partnerships") "${currentYear}"`,
+  ];
+
+  const contactSearchResults = await batchedSearches(contactQueries, 3, 400);
+  const [s1, s2, s3, s4, s5, s6] = contactSearchResults;
+  const s7: SearchResult[] = [];
+  const s8: SearchResult[] = [];
 
   // Aggregate all unique results
-  const allResults = [...s1, ...s2, ...s3, ...s4, ...s5, ...s6, ...s7, ...s8];
+  const allResults = [...s1, ...s2, ...s3, ...s4, ...s5, ...s6];
   const allUrls = new Set(allResults.map(r => r.link?.toLowerCase()).filter(Boolean));
 
   // Hunter.io domain search — if configured, this gives us verified emails + LinkedIn

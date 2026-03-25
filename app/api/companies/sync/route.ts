@@ -38,14 +38,15 @@ export async function POST() {
       draft: r.draft || false,
     }));
 
-    const ok = await syncAllCompaniesToSheets(companies);
+    const result = await syncAllCompaniesToSheets(companies);
+    const ok = result === true;
 
     return NextResponse.json({
       ok,
       synced: companies.length,
       message: ok
         ? `Synced ${companies.length} companies to Google Sheets`
-        : 'Sync failed — check server logs',
+        : `Sync failed: ${result}`,
     });
   } catch (error) {
     console.error('❌ Full sync error:', error);

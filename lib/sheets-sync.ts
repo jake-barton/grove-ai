@@ -450,9 +450,9 @@ export async function clearAllFromSheets(): Promise<boolean> {
 }
 
 /** Bulk sync (used by clear/route) */
-export async function syncAllCompaniesToSheets(companies: Company[]): Promise<boolean> {
+export async function syncAllCompaniesToSheets(companies: Company[]): Promise<boolean | string> {
   const api = await getSheetsClient();
-  if (!api) return false;
+  if (!api) return 'NO_CREDENTIALS';
   const spreadsheetId = await getOrCreateSpreadsheet();
   if (!spreadsheetId) return false;
 
@@ -508,6 +508,6 @@ export async function syncAllCompaniesToSheets(companies: Company[]): Promise<bo
     return true;
   } catch (error) {
     console.error('❌ Error syncing all companies:', error);
-    return false;
+    return String(error);
   }
 }

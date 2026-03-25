@@ -168,7 +168,7 @@ export async function POST(request: NextRequest) {
     // All natural language chat goes through the AI intent classifier — streaming
     return makeStream(async (emit) => {
       const systemMessage: ChatMessage = { role: 'system', content: SYSTEM_PROMPT };
-      const allMessages: ChatMessage[] = [systemMessage, ...messages];
+      void systemMessage; // system prompt is used as base for enrichedSystem below
       const userMessage = messages[messages.length - 1]?.content || '';
 
       // ── AI INTENT CLASSIFIER ──────────────────────────────────────────────────
@@ -516,7 +516,13 @@ If nothing to parse, return [].`;
     }
 
     // ── CHAT FALLBACK ──────────────────────────────────────────────────────────
-    const chatResponse = await chatWithOpenAI(allMessages, undefined, aiMode);
+    // Inject the live company list into the system prompt so the AI knows what's in the pipeline
+    const enrichedSystem: ChatMessage = {
+      role: 'system',
+      content: SYSTEM_PROMPT + `\n\n## Current Pipeline Companies (${existingCompanies.length} total)\n${companySummary}\n\nWhen answering questions about "our companies", "the pipeline", "what do we have", etc., use this list as the source of truth. Do NOT make up company names or invent a generic list — only reference the companies above.`,
+    };
+    const enrichedMessages: ChatMessage[] = [enrichedSystem, ...messages];
+    const chatResponse = await chatWithOpenAI(enrichedMessages, undefined, aiMode);
     emit({ type: 'result', message: chatResponse });
     });
 

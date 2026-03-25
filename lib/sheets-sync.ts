@@ -451,6 +451,29 @@ export async function clearAllFromSheets(): Promise<boolean> {
 }
 
 /** Bulk sync (used by clear/route) */
+/** Read column A (Company Name) from the main sheet and return all non-header, non-empty names. */
+export async function getSheetCompanyNames(): Promise<string[] | null> {
+  const api = await getSheetsClient();
+  if (!api) return null;
+  const spreadsheetId = process.env.GOOGLE_SHEETS_SPREADSHEET_ID?.trim();
+  if (!spreadsheetId) return null;
+  try {
+    const res = await api.spreadsheets.values.get({
+      spreadsheetId,
+      range: 'A:A',
+    });
+    const rows = res.data.values ?? [];
+    // Skip header row, filter blanks and the header text itself
+    return rows
+      .slice(1)
+      .map(r => (r[0] ?? '').toString().trim())
+      .filter(name => name.length > 0 && name.toLowerCase() !== 'company name');
+  } catch (err) {
+    console.error('❌ Failed to read sheet company names:', err);
+    return null;
+  }
+}
+
 export async function syncAllCompaniesToSheets(companies: Company[]): Promise<boolean | string> {
   const api = await getSheetsClient();
   if (!api) return 'NO_CREDENTIALS';

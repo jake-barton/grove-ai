@@ -4,6 +4,7 @@ import { chatWithOpenAI, classifyIntent, SYSTEM_PROMPT, ChatMessage } from '@/li
 import { researchCompany, batchResearchCompanies, findContactForCompany } from '@/lib/ai-agent';
 import { handleNaturalLanguageFormat } from '@/lib/sheets-formatter';
 import { getAIModeFromRequest } from '@/lib/ai-mode';
+import { getSheetCompanyNames } from '@/lib/sheets-sync';
 
 // ── Streaming helper ────────────────────────────────────────────────────────
 type StreamChunk =
@@ -220,7 +221,10 @@ Classify this into EXACTLY ONE of these intents and return ONLY a JSON object:
 7. SYNC_SHEET — user wants the spreadsheet to match the app / database (sync, update, make same, out of sync, refresh sheet, etc.)
    → { "intent": "SYNC_SHEET" }
 
-8. CHAT — general question, greeting, or anything else not covered above
+8. COMPARE_SHEET — user wants to compare what's in the app/database vs what's in the Google Sheet (find extra/missing/different companies)
+   → { "intent": "COMPARE_SHEET" }
+
+9. CHAT — general question, greeting, or anything else not covered above
    → { "intent": "CHAT" }
 
 Rules:
@@ -235,6 +239,9 @@ Rules:
 - "our info doesn't match the sheet" → SYNC_SHEET
 - "sync the spreadsheet" → SYNC_SHEET
 - "the sheet is out of date" → SYNC_SHEET
+- "what's extra in the sheet?" → COMPARE_SHEET
+- "the sheet has more companies than the app" → COMPARE_SHEET
+- "what's the difference between the app and the sheet?" → COMPARE_SHEET
 - When ambiguous, prefer the more specific action over CHAT
 
 Return ONLY valid JSON, nothing else.`;
@@ -479,6 +486,47 @@ If nothing to parse, return [].`;
         }
         emit({ type: 'result', message: `✅ Deleted ${deleted} ${deleted === 1 ? 'company' : 'companies'}.` });
       }
+      return;
+    }
+
+    // ── COMPARE SHEET ──────────────────────────────────────────────────────────
+    if (intent.intent === 'COMPARE_SHEET') {
+      emit({ type: 'step', text: 'Reading company names from Google Sheet…', icon: '📊' });
+
+      const sheetNames = await getSheetCompanyNames();
+
+      if (sheetNames === null) {
+        emit({ type: 'result', message: '❌ Could not read the Google Sheet. Please check your credentials are configured correctly.' });
+        return;
+      }
+
+      const dbNames = existingCompanies.map(c => c.company_name);
+      const sheetSet = new Set(sheetNames.map(n => n.toLowerCase()));
+      const dbSet = new Set(dbNames.map(n => n.toLowerCase()));
+
+      const inSheetOnly = sheetNames.filter(n => !dbSet.has(n.toLowerCase()));
+      const inDbOnly = dbNames.filter(n => !sheetSet.has(n.toLowerCase()));
+
+      let msg = `# 📊 Sheet vs App Comparison\n\n`;
+      msg += `**App (database):** ${dbNames.length} companies\n`;
+      msg += `**Google Sheet:** ${sheetNames.length} companies\n\n`;
+
+      if (inSheetOnly.length === 0 && inDbOnly.length === 0) {
+        msg += `✅ **Everything matches!** Both the app and the sheet have the same ${dbNames.length} companies.\n`;
+      } else {
+        if (inSheetOnly.length > 0) {
+          msg += `## 🔴 In Sheet but NOT in App (${inSheetOnly.length})\n`;
+          inSheetOnly.forEach(n => { msg += `- ${n}\n`; });
+          msg += `\n_These rows exist in Google Sheets but have no record in the database. You can sync the app → sheet to remove them, or add them to the app first._\n\n`;
+        }
+        if (inDbOnly.length > 0) {
+          msg += `## 🟡 In App but NOT in Sheet (${inDbOnly.length})\n`;
+          inDbOnly.forEach(n => { msg += `- ${n}\n`; });
+          msg += `\n_These companies are in the database but missing from the sheet. Say **"sync the sheet"** to push them._\n\n`;
+        }
+      }
+
+      emit({ type: 'result', message: msg });
       return;
     }
 

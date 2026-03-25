@@ -34,7 +34,7 @@ const WHITE        = { red: 1,    green: 1,    blue: 1    };
 let sheetsInstance: sheets_v4.Sheets | null = null;
 
 async function getSheetsClient(): Promise<sheets_v4.Sheets | null> {
-  // Don't cache — always create fresh so new env vars take effect without cold start
+  if (sheetsInstance) return sheetsInstance;
   const rawKey = process.env.GOOGLE_SHEETS_PRIVATE_KEY;
   const email = process.env.GOOGLE_SHEETS_CLIENT_EMAIL;
   if (!rawKey || !email) {
@@ -241,7 +241,7 @@ export async function getOrCreateSpreadsheet(): Promise<string | null> {
   const api = await getSheetsClient();
   if (!api) return null;
 
-  const spreadsheetId = process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
+  const spreadsheetId = process.env.GOOGLE_SHEETS_SPREADSHEET_ID?.trim();
   if (!spreadsheetId) return null;
 
   try {

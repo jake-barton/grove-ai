@@ -75,7 +75,18 @@ async function withRetry<T>(
       return await fn();
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      const is429 = msg.includes('429') || msg.includes('quota') || msg.includes('rate limit') || msg.includes('Rate limit');
+      const is429 = msg.includes('429') || msg.includes('rate limit') || msg.includes('Rate limit');
+      const isQuotaExhausted = msg.includes('quota') || msg.includes('insufficient_quota') || msg.includes('billing');
+      const isAuthError = msg.includes('401') || msg.includes('invalid_api_key') || msg.includes('Incorrect API key');
+
+      // Hard failures — no point retrying
+      if (isAuthError) {
+        throw new Error('OpenAI API key is invalid or not set. Please check your OPENAI_API_KEY in Vercel environment variables.');
+      }
+      if (isQuotaExhausted) {
+        throw new Error('OpenAI quota exhausted. Please check your billing at platform.openai.com/usage and add credits if needed.');
+      }
+
       if (is429 && attempt < maxAttempts) {
         const delay = baseDelayMs * Math.pow(2, attempt - 1); // 5s, 10s, 20s
         console.warn(`⏳ OpenAI rate limited (429) — retrying in ${delay / 1000}s (attempt ${attempt}/${maxAttempts})`);

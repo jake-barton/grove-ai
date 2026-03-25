@@ -41,10 +41,7 @@ export async function searchWeb(query: string): Promise<SearchResult[]> {
     
     const response = await axios.post(
       'https://google.serper.dev/search',
-      {
-        q: query,
-        num: 10,
-      },
+      { q: query, num: 10 },
       {
         headers: {
           'X-API-KEY': process.env.SERPER_API_KEY || '',
@@ -57,7 +54,13 @@ export async function searchWeb(query: string): Promise<SearchResult[]> {
     console.log(`✅ Found ${results.length} search results`);
     return results;
   } catch (error) {
-    console.error('❌ Web search error:', error);
+    const msg = error instanceof Error ? error.message : String(error);
+    // Serper returns 429 on rate limit and 402 on quota exhaustion
+    if (msg.includes('429') || msg.includes('402') || msg.includes('quota') || msg.includes('credits')) {
+      console.warn('⚠️ Serper API quota/rate limit hit — search skipped. Research quality will be reduced.');
+    } else {
+      console.error('❌ Web search error:', error);
+    }
     return [];
   }
 }

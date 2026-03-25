@@ -9,6 +9,12 @@ import { getSheetCompanyNames } from '@/lib/sheets-sync';
 // Allow up to 300 seconds for long-running research on Vercel Pro
 export const maxDuration = 300;
 
+// Internal header that lets server-to-server fetches bypass the auth middleware
+const INTERNAL_HEADERS = {
+  'Content-Type': 'application/json',
+  'x-grove-internal': process.env.INTERNAL_API_SECRET || 'grove-internal-2026',
+};
+
 // ── Streaming helper ────────────────────────────────────────────────────────
 type StreamChunk =
   | { type: 'step';    text: string; icon?: string; sub?: string }
@@ -87,7 +93,7 @@ async function runResearch(
       try {
         const saveResponse = await fetch(`${origin}/api/companies`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: INTERNAL_HEADERS,
           body: JSON.stringify({ companyName: companyData.company_name, autoResearch: false, companyData }),
         });
         if (saveResponse.ok) {
@@ -426,7 +432,7 @@ If nothing to parse, return [].`;
         try {
           const patchRes = await fetch(`${request.nextUrl.origin}/api/companies/${edit.company_id}`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
+            headers: INTERNAL_HEADERS,
             body: JSON.stringify(edit.fields),
           });
           if (patchRes.ok) {
@@ -497,7 +503,7 @@ If nothing to parse, return [].`;
 
         let deleted = 0;
         for (const company of toDelete) {
-          const res = await fetch(`${request.nextUrl.origin}/api/companies/${company.id}`, { method: 'DELETE' });
+          const res = await fetch(`${request.nextUrl.origin}/api/companies/${company.id}`, { method: 'DELETE', headers: INTERNAL_HEADERS });
           if (res.ok) deleted++;
         }
         const names = toDelete.map(c => c.company_name).join(', ');
@@ -508,7 +514,7 @@ If nothing to parse, return [].`;
       emit({ type: 'step', text: deleteAll ? 'Clearing all companies from database…' : `Deleting ${targetNames.join(', ')}…`, icon: '🗑️' });
 
       if (deleteAll) {
-        const clearResponse = await fetch(`${request.nextUrl.origin}/api/companies/clear`, { method: 'DELETE' });
+        const clearResponse = await fetch(`${request.nextUrl.origin}/api/companies/clear`, { method: 'DELETE', headers: INTERNAL_HEADERS });
         if (!clearResponse.ok) {
           emit({ type: 'result', message: '❌ Failed to delete companies.' });
           return;
@@ -519,7 +525,7 @@ If nothing to parse, return [].`;
         for (const name of targetNames) {
           const company = existingCompanies.find(c => c.company_name.toLowerCase().includes(name.toLowerCase()));
           if (company) {
-            const res = await fetch(`${request.nextUrl.origin}/api/companies/${company.id}`, { method: 'DELETE' });
+            const res = await fetch(`${request.nextUrl.origin}/api/companies/${company.id}`, { method: 'DELETE', headers: INTERNAL_HEADERS });
             if (res.ok) deleted++;
           }
         }
@@ -573,7 +579,7 @@ If nothing to parse, return [].`;
     if (intent.intent === 'SYNC_SHEET') {
       emit({ type: 'step', text: `Syncing ${existingCompanies.length} companies from the database to Google Sheets…`, icon: '🔄' });
 
-      const syncRes = await fetch(`${request.nextUrl.origin}/api/companies/sync`, { method: 'POST' });
+      const syncRes = await fetch(`${request.nextUrl.origin}/api/companies/sync`, { method: 'POST', headers: INTERNAL_HEADERS });
       const syncData = await syncRes.json();
 
       if (syncData.ok) {

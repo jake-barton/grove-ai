@@ -61,8 +61,10 @@ export default function Home() {
     pendingActionRef.current = null;
   };
 
-  // Load companies on mount
+  // Load companies on mount + clear any leftover session so auth is required on every page load
   useEffect(() => {
+    // Invalidate session — ensures password is required on every fresh visit
+    fetch('/api/auth', { method: 'GET' }).catch(() => {});
     fetchCompanies();
   }, []);
 

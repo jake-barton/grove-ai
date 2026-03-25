@@ -15,16 +15,33 @@ export async function POST(req: NextRequest) {
   const res = NextResponse.json({ ok: true });
   res.cookies.set('grove-session', 'authenticated', {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: 'strict',
     path: '/',
-    // Session cookie — expires when browser closes
-    // For persistent login add: maxAge: 60 * 60 * 24 * 7
+    // No maxAge = pure session cookie. Browser SHOULD clear on close,
+    // but we also expire it via DELETE on every page load (see GET below).
+  });
+  return res;
+}
+
+// Called on every page load to clear the session — forces re-auth each visit
+export async function GET() {
+  const res = NextResponse.json({ ok: true });
+  res.cookies.set('grove-session', '', {
+    httpOnly: true,
+    sameSite: 'strict',
+    path: '/',
+    maxAge: 0,
   });
   return res;
 }
 
 export async function DELETE() {
   const res = NextResponse.json({ ok: true });
-  res.cookies.delete('grove-session');
+  res.cookies.set('grove-session', '', {
+    httpOnly: true,
+    sameSite: 'strict',
+    path: '/',
+    maxAge: 0,
+  });
   return res;
 }

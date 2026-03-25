@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { exportToGoogleSheets, syncAllToGoogleSheets } from '@/lib/google-sheets';
 import { prisma } from '@/lib/db';
 
+export const maxDuration = 60;
+
 export async function POST(request: NextRequest) {
   try {
     const { companyIds } = await request.json();

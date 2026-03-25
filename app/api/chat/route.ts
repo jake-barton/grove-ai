@@ -6,6 +6,9 @@ import { handleNaturalLanguageFormat } from '@/lib/sheets-formatter';
 import { getAIModeFromRequest } from '@/lib/ai-mode';
 import { getSheetCompanyNames } from '@/lib/sheets-sync';
 
+// Allow up to 300 seconds for long-running research on Vercel Pro
+export const maxDuration = 300;
+
 // ── Streaming helper ────────────────────────────────────────────────────────
 type StreamChunk =
   | { type: 'step';    text: string; icon?: string; sub?: string }
@@ -181,7 +184,7 @@ export async function POST(request: NextRequest) {
 
     const existingRes = await fetch(`${request.nextUrl.origin}/api/companies`);
     const existingData = await existingRes.json();
-    const existingCompanies: { id: string; company_name: string; contact_name?: string; outreach_status?: string }[] =
+    const existingCompanies: { id: string; company_name: string; contact_name?: string; outreach_status?: string; website?: string; linkedin_company?: string }[] =
       existingData.data || [];
 
     const companySummary = existingCompanies.length > 0
@@ -325,15 +328,24 @@ Return ONLY a JSON array of company name strings. Example: ["Stripe", "Twilio", 
       let notFound = 0;
       let resultsText = `# 🔍 Contact Search Results\n\n`;
 
-      for (let i = 0; i < targets.length; i++) {
-        const company = targets[i];
-        emit({ type: 'progress', current: i, total: targets.length, company: company.company_name });
-        emit({ type: 'step', text: `Searching LinkedIn + web for ${company.company_name}…`, icon: '🔬', sub: `${i + 1} of ${targets.length}` });
+      // Process in parallel batches of 3 to stay within rate limits but finish faster
+      const BATCH_SIZE = 3;
+      for (let batchStart = 0; batchStart < targets.length; batchStart += BATCH_SIZE) {
+        const batch = targets.slice(batchStart, batchStart + BATCH_SIZE);
 
-        try {
-          const contact = await findContactForCompany(company.company_name, company.id, request.nextUrl.origin);
+        emit({ type: 'progress', current: batchStart, total: targets.length, company: batch.map(c => c.company_name).join(', ') });
+        emit({ type: 'step', text: `Searching ${batch.map(c => c.company_name).join(', ')}…`, icon: '🔬', sub: `${batchStart + 1}–${Math.min(batchStart + BATCH_SIZE, targets.length)} of ${targets.length}` });
 
-          if (contact.contact_name) {
+        const batchResults = await Promise.allSettled(
+          batch.map(company => findContactForCompany(company.company_name, company.id, request.nextUrl.origin, company.website))
+        );
+
+        for (let j = 0; j < batch.length; j++) {
+          const company = batch[j];
+          const result = batchResults[j];
+
+          if (result.status === 'fulfilled' && result.value.contact_name) {
+            const contact = result.value;
             found++;
             emit({ type: 'step', text: `Found: ${contact.contact_name} at ${company.company_name}`, icon: '✅', sub: `${contact.contact_position || ''} — ${contact.confidence} confidence` });
             resultsText += `## ${company.company_name}\n`;
@@ -343,19 +355,17 @@ Return ONLY a JSON array of company name strings. Example: ["Stripe", "Twilio", 
             resultsText += `_Confidence: ${contact.confidence} | Source: ${contact.source}_\n\n`;
           } else {
             notFound++;
-            emit({ type: 'step', text: `No verified contact found for ${company.company_name}`, icon: '⚠️', sub: 'All candidates failed validation' });
+            const msg = result.status === 'rejected'
+              ? (result.reason instanceof Error ? result.reason.message.slice(0, 80) : String(result.reason))
+              : 'All candidates failed validation';
+            emit({ type: 'step', text: `No verified contact found for ${company.company_name}`, icon: '⚠️', sub: msg });
             resultsText += `## ${company.company_name}\n⚠️ No verified current contact found — existing data preserved\n\n`;
           }
-        } catch (err) {
-          notFound++;
-          const msg = err instanceof Error ? err.message.slice(0, 80) : String(err);
-          emit({ type: 'step', text: `Error searching ${company.company_name}`, icon: '❌', sub: msg });
-          resultsText += `## ${company.company_name}\n❌ Search failed\n\n`;
         }
 
-        if (i < targets.length - 1) {
-          emit({ type: 'step', text: `Pausing between searches to respect rate limits…`, icon: '⏳' });
-          await new Promise(r => setTimeout(r, 4000));
+        // Short pause between batches to respect rate limits
+        if (batchStart + BATCH_SIZE < targets.length) {
+          await new Promise(r => setTimeout(r, 2000));
         }
       }
 
@@ -369,8 +379,6 @@ Return ONLY a JSON array of company name strings. Example: ["Stripe", "Twilio", 
       emit({ type: 'result', message: resultsText, savedCompanies: found });
       return;
     }
-
-    // ── EDIT FIELDS ────────────────────────────────────────────────────────────
     if (intent.intent === 'EDIT_FIELDS') {
       if (existingCompanies.length === 0) {
         emit({ type: 'result', message: "No companies in your pipeline yet." });

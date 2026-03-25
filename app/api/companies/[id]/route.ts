@@ -3,6 +3,9 @@ import prisma from '@/lib/db';
 import { syncCompanyToSheets, deleteCompanyFromSheets } from '@/lib/sheets-sync';
 import { Company } from '@/lib/types';
 
+// Allow up to 60s for sync operations
+export const maxDuration = 60;
+
 function toCompany(row: Record<string, unknown>): Company {
   return {
     id: row.id as string,

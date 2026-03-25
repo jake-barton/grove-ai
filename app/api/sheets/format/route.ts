@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { handleNaturalLanguageFormat } from '@/lib/sheets-formatter';
 
+export const maxDuration = 60;
+
 export async function POST(request: NextRequest) {
   try {
     const { prompt } = await request.json();

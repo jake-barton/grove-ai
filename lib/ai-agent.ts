@@ -966,7 +966,8 @@ Respond ONLY with valid JSON. No explanations, no markdown, just pure JSON.`;
 export async function findContactForCompany(
   companyName: string,
   existingCompanyId?: string,
-  originUrl?: string
+  originUrl?: string,
+  knownWebsite?: string,
 ): Promise<{
   contact_name: string | null;
   contact_position: string | null;
@@ -1008,9 +1009,15 @@ export async function findContactForCompany(
   let hunterText = '';
   const hunterResults: HunterContact[] = [];
   try {
-    // Try to derive domain from company name
-    const domainGuess = companyName.toLowerCase().replace(/[^a-z0-9]/g, '') + '.com';
-    const hc = await hunterDomainSearch(domainGuess);
+    // Use the known website domain if available, otherwise guess from company name
+    let domain = '';
+    if (knownWebsite) {
+      try { domain = new URL(knownWebsite).hostname.replace(/^www\./, ''); } catch { /* ignore */ }
+    }
+    if (!domain) {
+      domain = companyName.toLowerCase().replace(/[^a-z0-9]/g, '') + '.com';
+    }
+    const hc = await hunterDomainSearch(domain);
     hunterResults.push(...hc);
     if (hc.length > 0) {
       hunterText = hc

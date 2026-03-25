@@ -3,6 +3,8 @@ import { prisma } from '@/lib/db';
 import { syncAllCompaniesToSheets } from '@/lib/sheets-sync';
 import { Company } from '@/lib/types';
 
+export const maxDuration = 60;
+
 // Full sync: wipe the sheet and rebuild it entirely from the database
 export async function POST() {
   try {

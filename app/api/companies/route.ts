@@ -5,6 +5,9 @@ import { researchCompany } from '@/lib/ai-agent';
 import { syncCompanyToSheets, deleteCompanyFromSheets } from '@/lib/sheets-sync';
 import { Company } from '@/lib/types';
 
+// Allow up to 300 seconds for AI research on Vercel Pro
+export const maxDuration = 300;
+
 // Map Prisma row → Company type
 function toCompany(row: Record<string, unknown>): Company {
   return {

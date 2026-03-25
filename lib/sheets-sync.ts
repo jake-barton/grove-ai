@@ -248,9 +248,10 @@ export async function getOrCreateSpreadsheet(): Promise<string | null> {
     await api.spreadsheets.get({ spreadsheetId });
     console.log(`✅ Using existing spreadsheet: ${spreadsheetId}`);
     return spreadsheetId;
-  } catch {
-    console.warn('⚠️ Spreadsheet not accessible');
-    return null;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('❌ Spreadsheet not accessible:', msg);
+    return msg; // return the error string so callers can surface it
   }
 }
 
@@ -454,7 +455,8 @@ export async function syncAllCompaniesToSheets(companies: Company[]): Promise<bo
   const api = await getSheetsClient();
   if (!api) return 'NO_CREDENTIALS';
   const spreadsheetId = await getOrCreateSpreadsheet();
-  if (!spreadsheetId) return false;
+  // getOrCreateSpreadsheet returns the ID on success, or an error string / null on failure
+  if (!spreadsheetId || spreadsheetId.length > 100) return spreadsheetId ?? 'NO_SPREADSHEET_ID';
 
   try {
     // ── Ensure EventsList sheet is up to date ─────────────────────────────────

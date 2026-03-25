@@ -184,7 +184,7 @@ export async function POST(request: NextRequest) {
 
     const existingRes = await fetch(`${request.nextUrl.origin}/api/companies`);
     const existingData = await existingRes.json();
-    const existingCompanies: { id: string; company_name: string; contact_name?: string; outreach_status?: string; website?: string; linkedin_company?: string }[] =
+    const existingCompanies: { id: string; company_name: string; contact_name?: string; outreach_status?: string; website?: string; linkedin_company?: string; sponsorship_likelihood_score?: number }[] =
       existingData.data || [];
 
     const companySummary = existingCompanies.length > 0
@@ -215,8 +215,11 @@ Classify this into EXACTLY ONE of these intents and return ONLY a JSON object:
    Use [] to mean all existing companies.
 
 5. DELETE — user wants to delete companies from the pipeline
-   → { "intent": "DELETE", "targets": ["company name", ...] }
-   Use [] to mean ALL companies. Only use if explicitly destructive language is used.
+   → { "intent": "DELETE", "targets": ["company name", ...], "scoreBelow": null }
+   Use targets: [] with scoreBelow: null to mean ALL companies.
+   Use scoreBelow: <number> when user says things like "below 3/10", "less than 5", "rating under 4", "low scores" (treat "low" as below 4).
+   When scoreBelow is set, targets must be [] — the filter is applied server-side against real scores.
+   Only use if explicitly destructive language is used.
 
 6. FORMAT_SHEET — user wants to format/style the Google Sheet (colors, sorting, highlights, etc.)
    → { "intent": "FORMAT_SHEET" }
@@ -236,7 +239,10 @@ Rules:
 - "update the IBM contact" → UPDATE_CONTACTS (targets: ["IBM"])
 - "find 3 new companies WITH good contacts" → RESEARCH_NEW (count: 3) — the "contacts" is a quality filter, not an update request
 - "set Microsoft score to 9" → EDIT_FIELDS
-- "delete everything" → DELETE (targets: [])
+- "delete everything" → DELETE (targets: [], scoreBelow: null)
+- "remove all companies with a rating below 3/10" → DELETE (targets: [], scoreBelow: 3)
+- "delete low scoring companies" → DELETE (targets: [], scoreBelow: 4)
+- "remove companies below 5" → DELETE (targets: [], scoreBelow: 5)
 - "what companies do we have?" → CHAT
 - "make the sheet the same as the app" → SYNC_SHEET
 - "our info doesn't match the sheet" → SYNC_SHEET
@@ -254,6 +260,7 @@ Return ONLY valid JSON, nothing else.`;
       count?: number;
       query?: string;
       targets?: string[];
+      scoreBelow?: number | null;
     } = { intent: 'CHAT' };
 
     try {
@@ -472,7 +479,31 @@ If nothing to parse, return [].`;
     // ── DELETE ─────────────────────────────────────────────────────────────────
     if (intent.intent === 'DELETE') {
       const targetNames: string[] = intent.targets || [];
-      const deleteAll = targetNames.length === 0;
+      const scoreBelow: number | null = intent.scoreBelow ?? null;
+      const deleteAll = targetNames.length === 0 && scoreBelow === null;
+
+      // Score-filtered delete — resolve names from live company list
+      if (scoreBelow !== null) {
+        const toDelete = existingCompanies.filter(
+          c => typeof c.sponsorship_likelihood_score === 'number' && c.sponsorship_likelihood_score < scoreBelow
+        );
+        emit({ type: 'step', text: `Found ${toDelete.length} ${toDelete.length === 1 ? 'company' : 'companies'} with score below ${scoreBelow}/10…`, icon: '🗑️',
+          sub: toDelete.map(c => `${c.company_name} (${c.sponsorship_likelihood_score}/10)`).join(', ') || 'none' });
+
+        if (toDelete.length === 0) {
+          emit({ type: 'result', message: `✅ No companies have a score below ${scoreBelow}/10. Nothing deleted.` });
+          return;
+        }
+
+        let deleted = 0;
+        for (const company of toDelete) {
+          const res = await fetch(`${request.nextUrl.origin}/api/companies/${company.id}`, { method: 'DELETE' });
+          if (res.ok) deleted++;
+        }
+        const names = toDelete.map(c => c.company_name).join(', ');
+        emit({ type: 'result', message: `✅ Deleted ${deleted} ${deleted === 1 ? 'company' : 'companies'} with score below ${scoreBelow}/10: **${names}**` });
+        return;
+      }
 
       emit({ type: 'step', text: deleteAll ? 'Clearing all companies from database…' : `Deleting ${targetNames.join(', ')}…`, icon: '🗑️' });
 

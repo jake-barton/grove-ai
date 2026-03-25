@@ -153,12 +153,29 @@ export function buildEventsSheetColorRequests(
 
 
 
+function normalizePrivateKey(raw: string): string {
+  let key = raw
+    .replace(/\\n/g, '\n')
+    .replace(/\n /g, '\n')
+    .trim();
+  if (!key.includes('\n')) {
+    const match = key.match(/-----BEGIN PRIVATE KEY-----([\s\S]+?)-----END PRIVATE KEY-----/);
+    if (match) {
+      const body = match[1].replace(/\s+/g, '');
+      const chunks = body.match(/.{1,64}/g)?.join('\n') ?? body;
+      key = `-----BEGIN PRIVATE KEY-----\n${chunks}\n-----END PRIVATE KEY-----`;
+    }
+  }
+  return key;
+}
+
 function getGoogleSheetsClient() {
-  const privateKey = process.env.GOOGLE_SHEETS_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  const rawKey = process.env.GOOGLE_SHEETS_PRIVATE_KEY;
   const clientEmail = process.env.GOOGLE_SHEETS_CLIENT_EMAIL;
-  if (!privateKey || !clientEmail) {
+  if (!rawKey || !clientEmail) {
     throw new Error('Google Sheets credentials not configured');
   }
+  const privateKey = normalizePrivateKey(rawKey);
   const auth = new google.auth.JWT({ email: clientEmail, key: privateKey, scopes: SCOPES });
   return google.sheets({ version: 'v4', auth });
 }

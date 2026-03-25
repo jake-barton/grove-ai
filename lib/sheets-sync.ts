@@ -35,11 +35,27 @@ let sheetsInstance: sheets_v4.Sheets | null = null;
 
 async function getSheetsClient(): Promise<sheets_v4.Sheets | null> {
   if (sheetsInstance) return sheetsInstance;
-  const key = process.env.GOOGLE_SHEETS_PRIVATE_KEY?.replace(/\\n/g, '\n');
+  const rawKey = process.env.GOOGLE_SHEETS_PRIVATE_KEY;
   const email = process.env.GOOGLE_SHEETS_CLIENT_EMAIL;
-  if (!key || !email) {
+  if (!rawKey || !email) {
     console.warn('⚠️ Google Sheets credentials not configured. Sync disabled.');
     return null;
+  }
+  // Normalize the private key — Vercel can store it with literal \n or with spaces
+  // replacing the newlines depending on how it was pasted. Handle all formats.
+  let key = rawKey
+    .replace(/\\n/g, '\n')   // literal backslash-n → real newline
+    .replace(/\n /g, '\n')   // newline + space → just newline
+    .trim();
+  // If the key body has no newlines at all (pasted as one long line with spaces),
+  // reformat it: header, 64-char chunks, footer
+  if (!key.includes('\n')) {
+    const match = key.match(/-----BEGIN PRIVATE KEY-----([\s\S]+?)-----END PRIVATE KEY-----/);
+    if (match) {
+      const body = match[1].replace(/\s+/g, '');
+      const chunks = body.match(/.{1,64}/g)?.join('\n') ?? body;
+      key = `-----BEGIN PRIVATE KEY-----\n${chunks}\n-----END PRIVATE KEY-----`;
+    }
   }
   const auth = new google.auth.JWT({ email, key, scopes: SCOPES });
   sheetsInstance = google.sheets({ version: 'v4', auth });

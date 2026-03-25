@@ -1,13 +1,24 @@
 // Runtime AI mode + API key store.
-// Uses in-memory state so it works on both local Node.js and Vercel serverless.
-// On local, the .ai-mode file is also read/written as a fallback so the setting
-// survives hot reloads across requests in the same process.
+//
+// MODE PERSISTENCE (Vercel-safe):
+//   The toggle sets a "grove-ai-mode" cookie via /api/settings response.
+//   API routes read the mode from that cookie using getAIModeFromRequest(req).
+//   This works across Vercel cold starts — no filesystem or in-memory state needed.
+//   Falls back to LMSTUDIO_MODE env var when no cookie is present.
+//
+// API KEY:
+//   Runtime key is in-memory only (session, per instance).
+//   For permanent keys, set OPENAI_API_KEY in Vercel dashboard.
+
 import fs from 'fs';
 import path from 'path';
+import { NextRequest } from 'next/server';
 
 export type AIMode = 'openai' | 'lmstudio';
 
-// ── In-memory store (shared within a serverless instance / local process) ────
+export const AI_MODE_COOKIE = 'grove-ai-mode';
+
+// ── In-memory fallback (local dev / within a single warm instance) ────────────
 let _mode: AIMode | null = null;
 let _runtimeApiKey: string | null = null;
 
@@ -17,10 +28,11 @@ function readModeFile(): AIMode | null {
   try {
     const val = fs.readFileSync(MODE_FILE, 'utf8').trim();
     if (val === 'lmstudio' || val === 'openai') return val;
-  } catch { /* file doesn't exist or not writable (Vercel) */ }
+  } catch { /* not available on Vercel read-only FS */ }
   return null;
 }
 
+/** Env/file fallback — use when no request context is available. */
 export function getAIMode(): AIMode {
   if (_mode) return _mode;
   const fromFile = readModeFile();
@@ -29,13 +41,22 @@ export function getAIMode(): AIMode {
   return _mode;
 }
 
+/**
+ * Read mode from the incoming request cookie.
+ * Use this in ALL API routes — it's the only method that persists across Vercel cold starts.
+ */
+export function getAIModeFromRequest(req: NextRequest): AIMode {
+  const cookie = req.cookies.get(AI_MODE_COOKIE)?.value;
+  if (cookie === 'lmstudio' || cookie === 'openai') return cookie;
+  return getAIMode(); // env/file fallback
+}
+
 export function setAIMode(mode: AIMode): void {
   _mode = mode;
-  // Best-effort file write for local dev (silently ignored on Vercel read-only FS)
   try { fs.writeFileSync(MODE_FILE, mode, 'utf8'); } catch { /* ok on Vercel */ }
 }
 
-// ── Runtime OpenAI API key (user-supplied, overrides env var) ────────────────
+// ── Runtime OpenAI API key ────────────────────────────────────────────────────
 export function getRuntimeApiKey(): string | null {
   return _runtimeApiKey;
 }

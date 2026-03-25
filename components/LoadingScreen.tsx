@@ -14,15 +14,12 @@ export default function LoadingScreen({ onComplete }: LoadingScreenProps) {
   const [showTech, setShowTech] = useState(false);
   const [showBirmingham, setShowBirmingham] = useState(false);
   const [fadeOut, setFadeOut] = useState(false);
-  const [orangeGlow, setOrangeGlow] = useState(false);
 
   useEffect(() => {
     // "Tech" slides in as rings bounce in
     const techTimer = setTimeout(() => setShowTech(true), 800);
     // "Birmingham" follows after a beat
     const birmTimer = setTimeout(() => setShowBirmingham(true), 1300);
-    // Orange glow fires when animation turns orange (~1590ms)
-    const glowTimer = setTimeout(() => setOrangeGlow(true), 1600);
     // Hold so the user can enjoy it, then fade
     const fadeTimer = setTimeout(() => setFadeOut(true), 3200);
     // Unmount after fade transition (0.6s)
@@ -31,7 +28,6 @@ export default function LoadingScreen({ onComplete }: LoadingScreenProps) {
     return () => {
       clearTimeout(techTimer);
       clearTimeout(birmTimer);
-      clearTimeout(glowTimer);
       clearTimeout(fadeTimer);
       clearTimeout(doneTimer);
     };
@@ -54,10 +50,6 @@ export default function LoadingScreen({ onComplete }: LoadingScreenProps) {
       }}
     >
       {/* Lottie — transparent background via rendererSettings */}
-      <div style={{
-        filter: orangeGlow ? 'drop-shadow(0 0 18px rgba(242,101,34,0.75)) drop-shadow(0 0 40px rgba(242,101,34,0.40))' : 'none',
-        transition: 'filter 0.4s ease-out',
-      }}>
       <Lottie
         animationData={animationData}
         loop={false}
@@ -65,7 +57,6 @@ export default function LoadingScreen({ onComplete }: LoadingScreenProps) {
         style={{ width: 240, height: 240 }}
         rendererSettings={{ preserveAspectRatio: 'xMidYMid meet' }}
       />
-      </div>
 
       {/* Text block sits tight beneath the animation */}
       <div

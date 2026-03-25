@@ -1,9 +1,9 @@
 // Settings API — manage AI mode + runtime OpenAI API key
 import { NextRequest, NextResponse } from 'next/server';
-import { getAIMode, setAIMode, getRuntimeApiKey, setRuntimeApiKey } from '@/lib/ai-mode';
+import { getAIModeFromRequest, setAIMode, getRuntimeApiKey, setRuntimeApiKey, AI_MODE_COOKIE } from '@/lib/ai-mode';
 
-export async function GET() {
-  const mode = getAIMode();
+export async function GET(req: NextRequest) {
+  const mode = getAIModeFromRequest(req);
   const runtimeKey = getRuntimeApiKey();
   const hasEnvKey =
     !!process.env.OPENAI_API_KEY &&
@@ -11,9 +11,7 @@ export async function GET() {
 
   return NextResponse.json({
     mode,
-    // Never expose the actual key — just signal which one is active
     keySource: runtimeKey ? 'runtime' : hasEnvKey ? 'env' : 'none',
-    // Return last 4 chars of active key so user can confirm which key is set
     keyHint: runtimeKey
       ? `…${runtimeKey.slice(-4)}`
       : hasEnvKey
@@ -24,19 +22,20 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
+  let newMode = getAIModeFromRequest(req);
 
   if ('mode' in body) {
     const { mode } = body;
     if (mode !== 'openai' && mode !== 'lmstudio') {
       return NextResponse.json({ error: 'Invalid mode' }, { status: 400 });
     }
-    setAIMode(mode);
+    newMode = mode;
+    setAIMode(mode); // also update in-memory + local file for local dev
   }
 
   if ('apiKey' in body) {
     const key: string = body.apiKey ?? '';
     if (key === '') {
-      // Empty string = clear the runtime key, fall back to env
       setRuntimeApiKey(null);
     } else if (!key.startsWith('sk-')) {
       return NextResponse.json({ error: 'Invalid API key format' }, { status: 400 });
@@ -45,5 +44,15 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, mode: getAIMode() });
+  const res = NextResponse.json({ ok: true, mode: newMode });
+
+  // Set cookie so mode persists across Vercel cold starts
+  res.cookies.set(AI_MODE_COOKIE, newMode, {
+    path: '/',
+    maxAge: 60 * 60 * 24 * 365, // 1 year
+    sameSite: 'lax',
+    httpOnly: false, // readable by client JS for status display
+  });
+
+  return res;
 }

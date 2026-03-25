@@ -77,32 +77,8 @@ export default function Home() {
 
     const pollInterval = setInterval(() => { fetchCompanies(); }, 5000);
 
-    // If the local bridge is running, route through it so research isn't
-    // killed by Vercel's 10-second serverless timeout
-    const lowerContent = content.toLowerCase();
-    const isResearchIntent =
-      lowerContent.includes('research') || lowerContent.includes('find') ||
-      lowerContent.includes('sponsor') || lowerContent.includes('compan') ||
-      lowerContent.includes('contact') || lowerContent.includes('suggest');
-
-    const isDeleteIntent =
-      lowerContent.includes('delete') || lowerContent.includes('remove all') ||
-      lowerContent.includes('clear all') || lowerContent.includes('wipe') ||
-      lowerContent.includes('erase');
-
-    let chatEndpoint = '/api/chat';
-    if (isResearchIntent || isDeleteIntent) {
-      try {
-        const bridgeStatus = await fetch('http://localhost:7842/status', { signal: AbortSignal.timeout(500) });
-        const bridgeData = await bridgeStatus.json();
-        if (bridgeData.phase === 'connected') {
-          chatEndpoint = 'http://localhost:7842/research';
-        }
-      } catch { /* bridge not running, use Vercel */ }
-    }
-
     try {
-      const response = await fetch(chatEndpoint, {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

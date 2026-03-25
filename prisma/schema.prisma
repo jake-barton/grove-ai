@@ -39,13 +39,3 @@ model Company {
 
   @@map("companies")
 }
-
-// Runtime config — key/value pairs stored in DB so they survive redeployments
-// and can be updated without redeploying (e.g. the live ngrok tunnel URL)
-model Config {
-  key        String   @id
-  value      String
-  updated_at DateTime @updatedAt
-
-  @@map("config")
-}

@@ -24,11 +24,6 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "Grove — TechBirmingham Sponsor Research",
   description: "AI-powered sponsor discovery for Sloss.Tech & TechBirmingham events",
-  icons: {
-    icon: '/TechBirminghamAsset 1.svg',
-    shortcut: '/TechBirminghamAsset 1.svg',
-    apple: '/TechBirminghamAsset 1.svg',
-  },
 };
 
 export default function RootLayout({

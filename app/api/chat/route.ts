@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { chatWithOpenAI, classifyIntent, SYSTEM_PROMPT, ChatMessage } from '@/lib/openai';
 import { researchCompany, batchResearchCompanies, findContactForCompany } from '@/lib/ai-agent';
 import { handleNaturalLanguageFormat } from '@/lib/sheets-formatter';
+import { getAIModeFromRequest } from '@/lib/ai-mode';
 
 // ── Streaming helper ────────────────────────────────────────────────────────
 type StreamChunk =
@@ -121,6 +122,9 @@ async function runResearch(
 }
 
 export async function POST(request: NextRequest) {
+  // Read AI mode from request cookie — works across Vercel cold starts
+  const aiMode = getAIModeFromRequest(request);
+
   try {
     // Parse request body ONCE
     const body = await request.json();
@@ -484,7 +488,7 @@ If nothing to parse, return [].`;
     }
 
     // ── CHAT FALLBACK ──────────────────────────────────────────────────────────
-    const chatResponse = await chatWithOpenAI(allMessages);
+    const chatResponse = await chatWithOpenAI(allMessages, undefined, aiMode);
     emit({ type: 'result', message: chatResponse });
     });
 

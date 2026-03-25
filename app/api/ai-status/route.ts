@@ -1,8 +1,8 @@
-import { NextResponse } from 'next/server';
-import { getAIMode, getRuntimeApiKey } from '@/lib/ai-mode';
+import { NextRequest, NextResponse } from 'next/server';
+import { getAIModeFromRequest, getRuntimeApiKey } from '@/lib/ai-mode';
 
-export async function GET() {
-  const mode = getAIMode();
+export async function GET(req: NextRequest) {
+  const mode = getAIModeFromRequest(req);
   const runtimeKey = getRuntimeApiKey();
   const envKey = process.env.OPENAI_API_KEY;
   const hasOpenAIKey =

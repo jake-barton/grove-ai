@@ -1,9 +1,9 @@
-// Legacy route — kept for backward compat, now proxies to /api/settings
+// Legacy route — kept for backward compat, proxies to /api/settings logic
 import { NextRequest, NextResponse } from 'next/server';
-import { getAIMode, setAIMode } from '@/lib/ai-mode';
+import { getAIModeFromRequest, setAIMode, AI_MODE_COOKIE } from '@/lib/ai-mode';
 
-export async function GET() {
-  return NextResponse.json({ mode: getAIMode() });
+export async function GET(req: NextRequest) {
+  return NextResponse.json({ mode: getAIModeFromRequest(req) });
 }
 
 export async function POST(req: NextRequest) {
@@ -12,5 +12,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid mode' }, { status: 400 });
   }
   setAIMode(mode);
-  return NextResponse.json({ mode, ok: true });
+  const res = NextResponse.json({ mode, ok: true });
+  res.cookies.set(AI_MODE_COOKIE, mode, {
+    path: '/',
+    maxAge: 60 * 60 * 24 * 365,
+    sameSite: 'lax',
+    httpOnly: false,
+  });
+  return res;
 }

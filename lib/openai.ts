@@ -1,10 +1,10 @@
 // OpenAI integration for chat
 // Works with OpenAI API OR LM Studio local server (OpenAI-compatible)
 import OpenAI from 'openai';
-import { getAIMode, getRuntimeApiKey } from '@/lib/ai-mode';
+import { getAIMode, getRuntimeApiKey, AIMode } from '@/lib/ai-mode';
 
-function isLMStudio() {
-  return getAIMode() === 'lmstudio';
+function isLMStudio(modeOverride?: AIMode) {
+  return (modeOverride ?? getAIMode()) === 'lmstudio';
 }
 
 const lmStudioBaseURL = process.env.LMSTUDIO_BASE_URL || 'http://localhost:1234/v1';
@@ -32,26 +32,29 @@ function getOpenAIKey(): string {
   return getRuntimeApiKey() || process.env.OPENAI_API_KEY || '';
 }
 
-function getClient(forceOpenAI = false) {
-  const useLM = !forceOpenAI && isLMStudio();
+/**
+ * Get the AI client.
+ * @param forceOpenAI — always use real OpenAI (for classifiers, extraction etc.)
+ * @param modeOverride — pass the mode from the request cookie (Vercel-safe)
+ */
+function getClient(forceOpenAI = false, modeOverride?: AIMode) {
+  const useLM = !forceOpenAI && isLMStudio(modeOverride);
   return new OpenAI({
     apiKey: useLM ? 'lm-studio' : getOpenAIKey(),
     baseURL: useLM ? lmStudioBaseURL : 'https://api.openai.com/v1',
   });
 }
 
-// Intent classification always uses OpenAI (fast, cheap, reliable — LM Studio can't always load)
-// Research/chat uses whichever mode is selected
-async function getDefaultChatModel(): Promise<string> {
-  if (isLMStudio()) return await getActiveLMStudioModel();
+async function getDefaultChatModel(modeOverride?: AIMode): Promise<string> {
+  if (isLMStudio(modeOverride)) return await getActiveLMStudioModel();
   return 'gpt-4o';
 }
-async function getDefaultJsonModel(): Promise<string> {
-  if (isLMStudio()) return await getActiveLMStudioModel();
+async function getDefaultJsonModel(modeOverride?: AIMode): Promise<string> {
+  if (isLMStudio(modeOverride)) return await getActiveLMStudioModel();
   return 'gpt-4o';
 }
-export async function getFastExtractionModel(): Promise<string> {
-  if (isLMStudio()) return await getActiveLMStudioModel();
+export async function getFastExtractionModel(modeOverride?: AIMode): Promise<string> {
+  if (isLMStudio(modeOverride)) return await getActiveLMStudioModel();
   return 'gpt-4o-mini';
 }
 export const FAST_EXTRACTION_MODEL = 'gpt-4o-mini'; // kept for backward compat
@@ -86,15 +89,17 @@ async function withRetry<T>(
 }
 
 /**
- * Chat — uses LM Studio model or gpt-4o depending on mode
+ * Chat — uses LM Studio model or gpt-4o depending on mode.
+ * Pass modeOverride (from request cookie) for Vercel-safe mode selection.
  */
 export async function chatWithOpenAI(
   messages: ChatMessage[],
-  modelOverride?: string
+  modelOverride?: string,
+  modeOverride?: import('@/lib/ai-mode').AIMode
 ): Promise<string> {
-  const model = modelOverride ?? await getDefaultChatModel();
+  const model = modelOverride ?? await getDefaultChatModel(modeOverride);
   return withRetry(async () => {
-    const response = await getClient().chat.completions.create({
+    const response = await getClient(false, modeOverride).chat.completions.create({
       model,
       messages,
       temperature: 0.2,
@@ -181,15 +186,17 @@ export async function extractContactWithAI(prompt: string): Promise<string> {
 
 /**
  * Generate with an explicit system prompt (used by sheets formatter etc.)
+ * Pass modeOverride (from request cookie) for Vercel-safe mode selection.
  */
 export async function generateWithSystemPrompt(
   systemPrompt: string,
   userPrompt: string,
-  modelOverride?: string
+  modelOverride?: string,
+  modeOverride?: import('@/lib/ai-mode').AIMode
 ): Promise<string> {
-  const model = modelOverride ?? await getDefaultJsonModel();
+  const model = modelOverride ?? await getDefaultJsonModel(modeOverride);
   try {
-    const response = await getClient().chat.completions.create({
+    const response = await getClient(false, modeOverride).chat.completions.create({
       model,
       messages: [
         { role: 'system', content: systemPrompt },

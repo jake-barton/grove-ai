@@ -1,5 +1,8 @@
 {
-  "buildCommand": "npx prisma generate && next build",
+  "buildCommand": "npm run build",
   "framework": "nextjs",
-  "regions": ["iad1"]
+  "regions": ["iad1"],
+  "env": {
+    "LMSTUDIO_MODE": "false"
+  }
 }

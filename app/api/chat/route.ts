@@ -214,10 +214,13 @@ Classify this into EXACTLY ONE of these intents and return ONLY a JSON object:
    → { "intent": "DELETE", "targets": ["company name", ...] }
    Use [] to mean ALL companies. Only use if explicitly destructive language is used.
 
-6. FORMAT_SHEET — user wants to format/style the Google Sheet
+6. FORMAT_SHEET — user wants to format/style the Google Sheet (colors, sorting, highlights, etc.)
    → { "intent": "FORMAT_SHEET" }
 
-7. CHAT — general question, greeting, or anything else not covered above
+7. SYNC_SHEET — user wants the spreadsheet to match the app / database (sync, update, make same, out of sync, refresh sheet, etc.)
+   → { "intent": "SYNC_SHEET" }
+
+8. CHAT — general question, greeting, or anything else not covered above
    → { "intent": "CHAT" }
 
 Rules:
@@ -228,6 +231,10 @@ Rules:
 - "set Microsoft score to 9" → EDIT_FIELDS
 - "delete everything" → DELETE (targets: [])
 - "what companies do we have?" → CHAT
+- "make the sheet the same as the app" → SYNC_SHEET
+- "our info doesn't match the sheet" → SYNC_SHEET
+- "sync the spreadsheet" → SYNC_SHEET
+- "the sheet is out of date" → SYNC_SHEET
 - When ambiguous, prefer the more specific action over CHAT
 
 Return ONLY valid JSON, nothing else.`;
@@ -471,6 +478,27 @@ If nothing to parse, return [].`;
           }
         }
         emit({ type: 'result', message: `✅ Deleted ${deleted} ${deleted === 1 ? 'company' : 'companies'}.` });
+      }
+      return;
+    }
+
+    // ── SYNC SHEET ─────────────────────────────────────────────────────────────
+    if (intent.intent === 'SYNC_SHEET') {
+      emit({ type: 'step', text: `Syncing ${existingCompanies.length} companies from the database to Google Sheets…`, icon: '🔄' });
+
+      const syncRes = await fetch(`${request.nextUrl.origin}/api/companies/sync`, { method: 'POST' });
+      const syncData = await syncRes.json();
+
+      if (syncData.ok) {
+        emit({
+          type: 'result',
+          message: `✅ **Google Sheet is now up to date.**\n\nSynced **${syncData.synced} companies** from the database — the sheet now exactly matches what's in the app.\n\n[View your spreadsheet](https://docs.google.com/spreadsheets/d/${process.env.GOOGLE_SHEETS_SPREADSHEET_ID})`,
+        });
+      } else {
+        emit({
+          type: 'result',
+          message: `❌ Sync failed. Please check that Google Sheets credentials are configured correctly.\n\n${syncData.error || ''}`,
+        });
       }
       return;
     }

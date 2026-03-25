@@ -7,6 +7,7 @@ import ChatInterface from '@/components/ChatInterface';
 import CompanyList from '@/components/CompanyList';
 import Header from '@/components/Header';
 import LoadingScreen from '@/components/LoadingScreen';
+import PasswordModal from '@/components/PasswordModal';
 
 export type ThinkingStep = {
   text: string;
@@ -36,6 +37,29 @@ export default function Home() {
   const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
   const [researchProgress, setResearchProgress] = useState<ResearchProgress | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // ── Password gate ────────────────────────────────────────────────────────
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  // Stores the action to retry after successful auth
+  const pendingActionRef = useRef<(() => void) | null>(null);
+
+  /** Call this when a 401 is received. Stores the retry fn and shows modal. */
+  const requireAuth = (retryFn: () => void) => {
+    pendingActionRef.current = retryFn;
+    setShowPasswordModal(true);
+  };
+
+  const handleAuthSuccess = () => {
+    setShowPasswordModal(false);
+    const retry = pendingActionRef.current;
+    pendingActionRef.current = null;
+    retry?.();
+  };
+
+  const handleAuthDismiss = () => {
+    setShowPasswordModal(false);
+    pendingActionRef.current = null;
+  };
 
   // Load companies on mount
   useEffect(() => {
@@ -76,6 +100,7 @@ export default function Home() {
     abortControllerRef.current = controller;
 
     const pollInterval = setInterval(() => { fetchCompanies(); }, 5000);
+    let authRedirect = false;
 
     try {
       const response = await fetch('/api/chat', {
@@ -86,6 +111,15 @@ export default function Home() {
         }),
         signal: controller.signal,
       });
+
+      // ── Auth gate ──────────────────────────────────────────────────────────
+      if (response.status === 401) {
+        authRedirect = true;
+        // Remove the optimistic user message we just added
+        setMessages(prev => prev.filter(m => m.id !== userMessage.id));
+        requireAuth(() => handleSendMessage(content));
+        return;
+      }
 
       const contentType = response.headers.get('Content-Type') || '';
 
@@ -162,10 +196,17 @@ export default function Home() {
     } finally {
       abortControllerRef.current = null;
       clearInterval(pollInterval);
-      await fetchCompanies();
-      setIsLoading(false);
-      setThinkingSteps([]);
-      setResearchProgress(null);
+      if (!authRedirect) {
+        await fetchCompanies();
+        setIsLoading(false);
+        setThinkingSteps([]);
+        setResearchProgress(null);
+      } else {
+        // Auth gate triggered — reset loading state immediately
+        setIsLoading(false);
+        setThinkingSteps([]);
+        setResearchProgress(null);
+      }
     }
   };
 
@@ -180,7 +221,8 @@ export default function Home() {
 
   const handleDeleteCompany = async (id: string) => {
     try {
-      await fetch(`/api/companies/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/companies/${id}`, { method: 'DELETE' });
+      if (res.status === 401) { requireAuth(() => handleDeleteCompany(id)); return; }
       await fetchCompanies();
     } catch (error) {
       console.error('Failed to delete company:', error);
@@ -189,11 +231,12 @@ export default function Home() {
 
   const handleApproveCompany = async (id: string, approved: boolean) => {
     try {
-      await fetch(`/api/companies/${id}`, {
+      const res = await fetch(`/api/companies/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ approved_for_export: approved }),
       });
+      if (res.status === 401) { requireAuth(() => handleApproveCompany(id, approved)); return; }
       await fetchCompanies();
     } catch (error) {
       console.error('Failed to approve company:', error);
@@ -202,11 +245,12 @@ export default function Home() {
 
   const handleUpdateCompany = async (id: string, data: Partial<Company>) => {
     try {
-      await fetch(`/api/companies/${id}`, {
+      const res = await fetch(`/api/companies/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
+      if (res.status === 401) { requireAuth(() => handleUpdateCompany(id, data)); return; }
       await fetchCompanies();
     } catch (error) {
       console.error('Failed to update company:', error);
@@ -217,6 +261,9 @@ export default function Home() {
     <>
       {showLoading && (
         <LoadingScreen onComplete={() => setShowLoading(false)} />
+      )}
+      {showPasswordModal && (
+        <PasswordModal onSuccess={handleAuthSuccess} onDismiss={handleAuthDismiss} />
       )}
       <div className="flex flex-col h-screen" style={{ background: 'var(--bg-base)' }}>
         <Header onExport={handleExportToSheets} companyCount={companies.length} />

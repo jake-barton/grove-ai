@@ -793,7 +793,10 @@ export async function researchCompany(companyName: string): Promise<Company> {
   })();
   console.log(`🎯 Contact confidence for ${validatedCompanyName}: ${contactConfidence}`);
 
-  // ── #5: Grounded sponsorship score — derived from real signals, not AI vibes ──
+  // ── #5: Grounded sponsorship score — blend AI agent score + data-signal score ──
+  // The ScoringAgent evaluates fit intelligently (product alignment, community signals, etc.)
+  // The signal score reflects data completeness (has contact? has LinkedIn? etc.)
+  // Final score = 60% AI judgment + 40% data signals — gives best of both worlds.
   const scoreSignals = {
     hasWebsite:           validatedWebsite ? 10 : 0,
     hasContactName:       finalContactName ? 15 : 0,
@@ -807,10 +810,14 @@ export async function researchCompany(companyName: string): Promise<Company> {
     hasRelevantNotes:     sanitizedNotes ? 5 : 0,
     dataQualityBonus:     validation.score >= 80 ? 10 : validation.score >= 60 ? 5 : 0,
   };
-  const groundedScore = Math.min(10, Math.max(1,
+  const signalScore = Math.min(10, Math.max(1,
     Math.round(Object.values(scoreSignals).reduce((a, b) => a + b, 0) / 10)
   ));
-  console.log(`📊 Grounded score for ${validatedCompanyName}: ${groundedScore}/10`, scoreSignals);
+  const agentScore = scoring.sponsorship_likelihood_score; // 1-10 from ScoringAgent
+  const groundedScore = Math.min(10, Math.max(1,
+    Math.round(agentScore * 0.6 + signalScore * 0.4)
+  ));
+  console.log(`📊 Scores for ${validatedCompanyName}: agent=${agentScore}/10, signals=${signalScore}/10, final=${groundedScore}/10`, scoreSignals);
 
   // Return structured, validated company data
   return {

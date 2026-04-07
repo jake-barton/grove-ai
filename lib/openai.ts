@@ -124,6 +124,181 @@ export async function chatWithOpenAI(
  * Intent classification — ALWAYS uses OpenAI gpt-4o-mini regardless of mode toggle.
  * Fast, cheap, and LM Studio can't reliably load models for this.
  */
+/**
+ * Intent classification using OpenAI function/tool calling.
+ * Much more reliable than asking the model to output JSON and parsing it —
+ * the model is forced to use the schema, so we get guaranteed structure.
+ */
+export async function classifyIntentWithTools(
+  userMessage: string,
+  companySummary: string
+): Promise<Record<string, unknown>> {
+  const tools: OpenAI.Chat.Completions.ChatCompletionTool[] = [
+    {
+      type: 'function',
+      function: {
+        name: 'research_new_companies',
+        description: 'Find and research NEW companies not already in the pipeline as potential sponsors for Sloss.Tech.',
+        parameters: {
+          type: 'object',
+          properties: {
+            count: { type: 'number', description: 'How many companies to research. Default 5.' },
+            query: { type: 'string', description: 'Any specific criteria the user mentioned (industry, size, location, etc.)' },
+          },
+          required: ['count'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'update_contacts',
+        description: 'Find or update LinkedIn/email contacts for existing pipeline companies.',
+        parameters: {
+          type: 'object',
+          properties: {
+            targets: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Company names to update. Empty array means ALL companies.',
+            },
+          },
+          required: ['targets'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'edit_company_fields',
+        description: 'Change specific data fields (score, status, notes, contact info, etc.) on one or more existing companies.',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 're_research_companies',
+        description: 'Fully re-research companies already in the pipeline to refresh their data.',
+        parameters: {
+          type: 'object',
+          properties: {
+            targets: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Company names to re-research. Empty array means ALL companies.',
+            },
+          },
+          required: ['targets'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'delete_companies',
+        description: 'Delete companies from the pipeline. IMPORTANT: always show a preview/confirmation before deleting.',
+        parameters: {
+          type: 'object',
+          properties: {
+            targets: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Specific company names to delete. Use empty array if deleting by score or all.',
+            },
+            score_below: {
+              type: 'number',
+              description: 'Delete companies with sponsorship_likelihood_score strictly LESS THAN this number. E.g. score_below:3 deletes scores 1 and 2. Use when user says "below X", "under X", "X/10 companies", "low scores", etc.',
+            },
+            delete_all: {
+              type: 'boolean',
+              description: 'True ONLY if user explicitly wants to delete every single company with no filter. Never set this if any score/name is mentioned.',
+            },
+          },
+          required: ['targets', 'delete_all'],
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'undo_last_action',
+        description: 'Restore the database to its state before the last destructive action (delete/clear). Use when user says "undo", "restore", "bring back", "I made a mistake", etc.',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'sync_sheet',
+        description: 'Sync the Google Sheet to match the current database.',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'compare_sheet',
+        description: 'Compare what is in the app/database vs what is in the Google Sheet.',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'format_sheet',
+        description: 'Format or style the Google Sheet (colors, sorting, highlights, column widths).',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'chat',
+        description: 'Answer a general question, provide information, or handle anything not covered by the other tools.',
+        parameters: { type: 'object', properties: {}, required: [] },
+      },
+    },
+  ];
+
+  return withRetry(async () => {
+    const response = await getClient(true).chat.completions.create({
+      model: 'gpt-4o',
+      temperature: 0.0,
+      tool_choice: 'required',
+      tools,
+      messages: [
+        {
+          role: 'system',
+          content: `You are Grove, an AI assistant for Sloss.Tech sponsor research. You MUST call exactly one function to handle the user's request. Never respond with text — always use a function call.
+
+Current pipeline (${companySummary.split('\n').length} companies):
+${companySummary}
+
+Key rules:
+- If the user mentions a score number with delete ("3/10", "below 4", "low scores"), use delete_companies with score_below set — NEVER set delete_all:true when a score is mentioned.
+- "delete all 2/10 companies" → score_below:3 (scores of 2 or less), delete_all:false
+- "delete everything" with no other qualifier → delete_all:true, score_below omitted
+- "undo", "restore", "bring back my companies" → undo_last_action
+- Prefer specific actions over chat when the user's intent is clear.`,
+        },
+        { role: 'user', content: userMessage },
+      ],
+    });
+
+    const toolCall = response.choices[0]?.message?.tool_calls?.[0];
+    if (!toolCall) return { intent: 'CHAT' };
+
+    const fnCall = toolCall.type === 'function' ? toolCall.function : null;
+    if (!fnCall) return { intent: 'CHAT' };
+
+    let args: Record<string, unknown> = {};
+    try { args = JSON.parse(fnCall.arguments); } catch { /* empty args */ }
+
+    return { intent: fnCall.name.toUpperCase(), ...args };
+  });
+}
+
 export async function classifyIntent(messages: ChatMessage[]): Promise<string> {
   return withRetry(async () => {
     const response = await getClient(true).chat.completions.create({

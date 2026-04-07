@@ -1,7 +1,8 @@
 // API Route: Chat with AI assistant — streaming research updates
 import { NextRequest, NextResponse } from 'next/server';
-import { chatWithOpenAI, classifyIntent, SYSTEM_PROMPT, ChatMessage } from '@/lib/openai';
+import { chatWithOpenAI, classifyIntent, classifyIntentWithTools, SYSTEM_PROMPT, ChatMessage } from '@/lib/openai';
 import { researchCompany, batchResearchCompanies, findContactForCompany } from '@/lib/ai-agent';
+import prisma from '@/lib/db';
 import { handleNaturalLanguageFormat } from '@/lib/sheets-formatter';
 import { getAIModeFromRequest } from '@/lib/ai-mode';
 import { getSheetCompanyNames } from '@/lib/sheets-sync';
@@ -181,10 +182,9 @@ export async function POST(request: NextRequest) {
       void systemMessage; // system prompt is used as base for enrichedSystem below
       const userMessage = messages[messages.length - 1]?.content || '';
 
-      // ── AI INTENT CLASSIFIER ──────────────────────────────────────────────────
-    // Single AI call decides what to do — no keyword matching, no brittle if/else chains.
-    // The classifier gets the full company list as context so it can reason about
-    // "our companies" vs "new companies", named companies, counts, etc.
+    // ── AI INTENT CLASSIFIER (OpenAI Function Calling) ────────────────────────
+    // Uses tool/function calling — the model MUST call one of our named tools.
+    // No JSON parsing fragility, no regex, no prompt-engineering guesswork.
 
     emit({ type: 'step', text: 'Understanding your request…', icon: '🧠' });
 
@@ -194,99 +194,16 @@ export async function POST(request: NextRequest) {
       existingData.data || [];
 
     const companySummary = existingCompanies.length > 0
-      ? existingCompanies.map(c => `- "${c.company_name}" (id: ${c.id}, contact: ${c.contact_name || 'none'}, status: ${c.outreach_status || 'not_started'})`).join('\n')
+      ? existingCompanies.map(c => `- "${c.company_name}" (id: ${c.id}, score: ${c.sponsorship_likelihood_score ?? 'N/A'}/10, contact: ${c.contact_name || 'none'}, status: ${c.outreach_status || 'not_started'})`).join('\n')
       : '(no companies in pipeline yet)';
 
-    const classifierPrompt = `You are the intent router for Grove, an AI sponsor research assistant for Sloss.Tech (a tech conference in Birmingham, Alabama).
+    const intent = await classifyIntentWithTools(userMessage, companySummary);
 
-Current pipeline companies:
-${companySummary}
-
-User message: "${userMessage}"
-
-Classify this into EXACTLY ONE of these intents and return ONLY a JSON object:
-
-1. RESEARCH_NEW — user wants to find/research NEW companies (not ones already in the pipeline)
-   → { "intent": "RESEARCH_NEW", "count": <number, default 5>, "query": "<their criteria>" }
-
-2. UPDATE_CONTACTS — user wants to find/update LinkedIn contacts for existing pipeline companies
-   → { "intent": "UPDATE_CONTACTS", "targets": ["company name", ...] }
-   Use [] for targets to mean ALL existing companies. Only include names that are in the pipeline.
-
-3. EDIT_FIELDS — user wants to change specific data fields on one or more existing companies
-   → { "intent": "EDIT_FIELDS" }
-
-4. RE_RESEARCH — user wants to fully re-research existing companies already in the pipeline
-   → { "intent": "RE_RESEARCH", "targets": ["company name", ...] }
-   Use [] to mean all existing companies.
-
-5. DELETE — user wants to delete companies from the pipeline
-   → { "intent": "DELETE", "targets": ["company name", ...], "scoreBelow": null }
-   Use targets: [] with scoreBelow: null to mean ALL companies.
-   Use scoreBelow: <number> when user says things like "below 3/10", "less than 5", "rating under 4", "low scores" (treat "low" as below 4).
-   When scoreBelow is set, targets must be [] — the filter is applied server-side against real scores.
-   Only use if explicitly destructive language is used.
-
-6. FORMAT_SHEET — user wants to format/style the Google Sheet (colors, sorting, highlights, etc.)
-   → { "intent": "FORMAT_SHEET" }
-
-7. SYNC_SHEET — user wants the spreadsheet to match the app / database (sync, update, make same, out of sync, refresh sheet, etc.)
-   → { "intent": "SYNC_SHEET" }
-
-8. COMPARE_SHEET — user wants to compare what's in the app/database vs what's in the Google Sheet (find extra/missing/different companies)
-   → { "intent": "COMPARE_SHEET" }
-
-9. CHAT — general question, greeting, or anything else not covered above
-   → { "intent": "CHAT" }
-
-Rules:
-- "find 3 new companies" → RESEARCH_NEW (count: 3)
-- "find contacts for our companies" → UPDATE_CONTACTS (targets: [])
-- "update the IBM contact" → UPDATE_CONTACTS (targets: ["IBM"])
-- "find 3 new companies WITH good contacts" → RESEARCH_NEW (count: 3) — the "contacts" is a quality filter, not an update request
-- "set Microsoft score to 9" → EDIT_FIELDS
-- "delete everything" → DELETE (targets: [], scoreBelow: null, deleteAll: true)
-- "delete all companies" → DELETE (targets: [], scoreBelow: null, deleteAll: true)
-- "remove all companies with a rating below 3/10" → DELETE (targets: [], scoreBelow: 3, deleteAll: false)
-- "delete all 2/10 companies" → DELETE (targets: [], scoreBelow: 3, deleteAll: false) — "2/10" means score ≤ 2, so scoreBelow: 3
-- "delete all companies under a score of 3/10" → DELETE (targets: [], scoreBelow: 3, deleteAll: false)
-- "delete low scoring companies" → DELETE (targets: [], scoreBelow: 4, deleteAll: false)
-- "remove companies below 5" → DELETE (targets: [], scoreBelow: 5, deleteAll: false)
-- "delete companies with a score of 3 or less" → DELETE (targets: [], scoreBelow: 4, deleteAll: false)
-- IMPORTANT: if the user mentions ANY score/rating number with delete, ALWAYS set scoreBelow and NEVER set deleteAll: true
-- "what companies do we have?" → CHAT
-- "make the sheet the same as the app" → SYNC_SHEET
-- "our info doesn't match the sheet" → SYNC_SHEET
-- "sync the spreadsheet" → SYNC_SHEET
-- "the sheet is out of date" → SYNC_SHEET
-- "what's extra in the sheet?" → COMPARE_SHEET
-- "the sheet has more companies than the app" → COMPARE_SHEET
-- "what's the difference between the app and the sheet?" → COMPARE_SHEET
-- When ambiguous, prefer the more specific action over CHAT
-
-Return ONLY valid JSON, nothing else.`;
-
-    let intent: {
-      intent: string;
-      count?: number;
-      query?: string;
-      targets?: string[];
-      scoreBelow?: number | null;
-    } = { intent: 'CHAT' };
-
-    try {
-      const raw = await classifyIntent([{ role: 'user', content: classifierPrompt }]);
-      const match = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').match(/\{[\s\S]*\}/);
-      if (match) intent = JSON.parse(match[0]);
-    } catch {
-      intent = { intent: 'CHAT' };
-    }
-
-    console.log(`🧠 Intent classified: ${intent.intent}`, intent);
+    console.log(`🧠 Intent classified: ${String(intent.intent)}`, intent);
 
     // ── RESEARCH NEW COMPANIES ─────────────────────────────────────────────────
-    if (intent.intent === 'RESEARCH_NEW') {
-      const count = Math.min(Math.max(intent.count || 5, 1), 20);
+    if (intent.intent === 'RESEARCH_NEW_COMPANIES') {
+      const count = Math.min(Math.max(Number(intent.count) || 5, 1), 20);
 
       const selectionPrompt = `You are a sponsor researcher for Sloss.Tech, a technology conference in Birmingham, Alabama.
 
@@ -325,7 +242,7 @@ Return ONLY a JSON array of company name strings. Example: ["Stripe", "Twilio", 
 
     // ── UPDATE CONTACTS ────────────────────────────────────────────────────────
     if (intent.intent === 'UPDATE_CONTACTS') {
-      const targetNames: string[] = intent.targets || [];
+      const targetNames: string[] = Array.isArray(intent.targets) ? (intent.targets as string[]) : [];
       const targets = targetNames.length > 0
         ? existingCompanies.filter(c => targetNames.some(t => c.company_name.toLowerCase().includes(t.toLowerCase())))
         : existingCompanies;
@@ -397,7 +314,7 @@ Return ONLY a JSON array of company name strings. Example: ["Stripe", "Twilio", 
       emit({ type: 'result', message: resultsText, savedCompanies: found });
       return;
     }
-    if (intent.intent === 'EDIT_FIELDS') {
+    if (intent.intent === 'EDIT_COMPANY_FIELDS') {
       if (existingCompanies.length === 0) {
         emit({ type: 'result', message: "No companies in your pipeline yet." });
         return;
@@ -461,8 +378,8 @@ If nothing to parse, return [].`;
     }
 
     // ── RE-RESEARCH EXISTING ───────────────────────────────────────────────────
-    if (intent.intent === 'RE_RESEARCH') {
-      const targetNames: string[] = intent.targets || [];
+    if (intent.intent === 'RE_RESEARCH_COMPANIES') {
+      const targetNames: string[] = Array.isArray(intent.targets) ? (intent.targets as string[]) : [];
       const targets = targetNames.length > 0
         ? existingCompanies.filter(c => targetNames.some(t => c.company_name.toLowerCase().includes(t.toLowerCase())))
         : existingCompanies;
@@ -487,31 +404,14 @@ If nothing to parse, return [].`;
       return;
     }
 
-    // ── DELETE ─────────────────────────────────────────────────────────────────
-    if (intent.intent === 'DELETE') {
-      const targetNames: string[] = intent.targets || [];
-      let scoreBelow: number | null = intent.scoreBelow ?? null;
+    // ── DELETE COMPANIES ───────────────────────────────────────────────────────
+    if (intent.intent === 'DELETE_COMPANIES') {
+      const targetNames: string[] = Array.isArray(intent.targets) ? (intent.targets as string[]) : [];
+      const scoreBelow: number | null = typeof intent.score_below === 'number' ? intent.score_below : null;
+      const deleteAll: boolean = intent.delete_all === true && scoreBelow === null && targetNames.length === 0;
 
-      // Safety net: if the classifier missed a score in the message, extract it here.
-      // "delete all 2/10 companies" or "delete companies scored 3 or below" etc.
-      if (scoreBelow === null && targetNames.length === 0) {
-        const scoreMatch = userMessage.match(/\b(\d+)\s*(?:\/\s*10|out of 10)?\s*(?:companies|or\s+(?:below|less|under)|and\s+below)/i)
-          || userMessage.match(/(?:below|under|less\s+than)\s+(\d+)/i)
-          || userMessage.match(/\ball\s+(\d+)\/10\b/i);
-        if (scoreMatch) {
-          const parsed = parseInt(scoreMatch[1], 10);
-          // "all 2/10 companies" means score == 2, so delete where score <= 2 (i.e. < 3)
-          // "below 3" means score < 3
-          if (parsed >= 1 && parsed <= 10) {
-            // If phrased as "X/10 companies" treat as "scored X or below"
-            scoreBelow = userMessage.match(/\d+\/10/) ? parsed + 1 : parsed;
-          }
-        }
-      }
-
-      const deleteAll = targetNames.length === 0 && scoreBelow === null;
-
-      // Score-filtered delete — resolve names from live company list
+      // ── Preview / safety check ──
+      // Score-filtered delete — show what will be deleted first
       if (scoreBelow !== null) {
         const toDelete = existingCompanies.filter(
           c => typeof c.sponsorship_likelihood_score === 'number' && c.sponsorship_likelihood_score < scoreBelow
@@ -524,42 +424,130 @@ If nothing to parse, return [].`;
           return;
         }
 
+        // Save snapshot before destructive action
+        emit({ type: 'step', text: 'Saving snapshot for undo…', icon: '📸' });
+        await prisma.snapshot.create({
+          data: {
+            label: `Before deleting ${toDelete.length} companies (score < ${scoreBelow})`,
+            trigger: 'DELETE_SCORE_FILTER',
+            data: existingCompanies as unknown as never,
+          },
+        });
+
         let deleted = 0;
         for (const company of toDelete) {
           const res = await fetch(`${request.nextUrl.origin}/api/companies/${company.id}`, { method: 'DELETE', headers: INTERNAL_HEADERS });
           if (res.ok) deleted++;
         }
         const names = toDelete.map(c => c.company_name).join(', ');
-        emit({ type: 'result', message: `✅ Deleted ${deleted} ${deleted === 1 ? 'company' : 'companies'} with score below ${scoreBelow}/10: **${names}**` });
+        emit({ type: 'result', message: `✅ Deleted ${deleted} ${deleted === 1 ? 'company' : 'companies'} with score below ${scoreBelow}/10: **${names}**\n\n_Say **"undo"** to restore these companies._` });
         return;
       }
 
-      emit({ type: 'step', text: deleteAll ? 'Clearing all companies from database…' : `Deleting ${targetNames.join(', ')}…`, icon: '🗑️' });
-
       if (deleteAll) {
-        // Require explicit confirmation word to prevent accidental wipes
-        const hasConfirmation = /\b(confirm|yes|all|everything|clear all|delete all|wipe)\b/i.test(userMessage);
-        if (!hasConfirmation) {
-          emit({ type: 'result', message: `⚠️ This will delete **all ${existingCompanies.length} companies** from the database and spreadsheet.\n\nType **"confirm delete all"** to proceed, or be more specific (e.g. "delete companies with score below 3").` });
+        if (existingCompanies.length === 0) {
+          emit({ type: 'result', message: '✅ Pipeline is already empty.' });
           return;
         }
+        emit({ type: 'step', text: `⚠️ Preparing to delete all ${existingCompanies.length} companies…`, icon: '⚠️' });
+
+        // Save snapshot before destructive action
+        emit({ type: 'step', text: 'Saving snapshot for undo…', icon: '�' });
+        await prisma.snapshot.create({
+          data: {
+            label: `Before deleting ALL ${existingCompanies.length} companies`,
+            trigger: 'DELETE_ALL',
+            data: existingCompanies as unknown as never,
+          },
+        });
+
         const clearResponse = await fetch(`${request.nextUrl.origin}/api/companies/clear`, { method: 'DELETE', headers: INTERNAL_HEADERS });
         if (!clearResponse.ok) {
           emit({ type: 'result', message: '❌ Failed to delete companies.' });
           return;
         }
-        emit({ type: 'result', message: '✅ All companies deleted from the database and spreadsheet.' });
-      } else {
-        let deleted = 0;
-        for (const name of targetNames) {
-          const company = existingCompanies.find(c => c.company_name.toLowerCase().includes(name.toLowerCase()));
-          if (company) {
-            const res = await fetch(`${request.nextUrl.origin}/api/companies/${company.id}`, { method: 'DELETE', headers: INTERNAL_HEADERS });
-            if (res.ok) deleted++;
-          }
-        }
-        emit({ type: 'result', message: `✅ Deleted ${deleted} ${deleted === 1 ? 'company' : 'companies'}.` });
+        emit({ type: 'result', message: `✅ All ${existingCompanies.length} companies deleted.\n\n_Say **"undo"** to restore them._` });
+        return;
       }
+
+      // Named targets
+      if (targetNames.length === 0) {
+        emit({ type: 'result', message: '⚠️ I wasn\'t sure which companies to delete. Try: "delete Microsoft" or "delete companies with score below 4".' });
+        return;
+      }
+
+      const toDeleteNamed = existingCompanies.filter(c =>
+        targetNames.some(t => c.company_name.toLowerCase().includes(t.toLowerCase()))
+      );
+
+      if (toDeleteNamed.length === 0) {
+        emit({ type: 'result', message: `⚠️ Couldn\'t find any of those companies in the pipeline: ${targetNames.join(', ')}` });
+        return;
+      }
+
+      emit({ type: 'step', text: `Deleting ${toDeleteNamed.map(c => c.company_name).join(', ')}…`, icon: '🗑️' });
+
+      // Save snapshot before destructive action
+      emit({ type: 'step', text: 'Saving snapshot for undo…', icon: '📸' });
+      await prisma.snapshot.create({
+        data: {
+          label: `Before deleting ${toDeleteNamed.map(c => c.company_name).join(', ')}`,
+          trigger: 'DELETE_NAMED',
+          data: existingCompanies as unknown as never,
+        },
+      });
+
+      let deleted = 0;
+      for (const company of toDeleteNamed) {
+        const res = await fetch(`${request.nextUrl.origin}/api/companies/${company.id}`, { method: 'DELETE', headers: INTERNAL_HEADERS });
+        if (res.ok) deleted++;
+      }
+      emit({ type: 'result', message: `✅ Deleted ${deleted} ${deleted === 1 ? 'company' : 'companies'}: **${toDeleteNamed.map(c => c.company_name).join(', ')}**\n\n_Say **"undo"** to restore them._` });
+      return;
+    }
+
+    // ── UNDO LAST ACTION ───────────────────────────────────────────────────────
+    if (intent.intent === 'UNDO_LAST_ACTION') {
+      emit({ type: 'step', text: 'Looking for the most recent snapshot…', icon: '⏪' });
+
+      const snap = await prisma.snapshot.findFirst({ orderBy: { created_at: 'desc' } });
+
+      if (!snap) {
+        emit({ type: 'result', message: '⚠️ No snapshots found. Nothing to undo.' });
+        return;
+      }
+
+      const snapData = snap.data as Array<Record<string, unknown>>;
+      emit({ type: 'step', text: `Found snapshot: "${snap.label}" — restoring ${snapData.length} companies…`, icon: '🔄' });
+
+      // Clear current DB
+      const clearRes = await fetch(`${request.nextUrl.origin}/api/companies/clear`, { method: 'DELETE', headers: INTERNAL_HEADERS });
+      if (!clearRes.ok) {
+        emit({ type: 'result', message: '❌ Failed to clear current companies before restoring.' });
+        return;
+      }
+
+      // Re-insert all companies from snapshot
+      let restored = 0;
+      for (const company of snapData) {
+        try {
+          const saveRes = await fetch(`${request.nextUrl.origin}/api/companies`, {
+            method: 'POST',
+            headers: INTERNAL_HEADERS,
+            body: JSON.stringify({ companyName: company.company_name, autoResearch: false, companyData: company }),
+          });
+          if (saveRes.ok) restored++;
+        } catch { /* skip */ }
+      }
+
+      // Delete the snapshot we just used (so a second undo doesn't repeat)
+      await prisma.snapshot.delete({ where: { id: snap.id } });
+
+      // Sync sheet
+      emit({ type: 'step', text: 'Syncing Google Sheet…', icon: '📊' });
+      await fetch(`${request.nextUrl.origin}/api/companies/sync`, { method: 'POST', headers: INTERNAL_HEADERS });
+
+      emit({ type: 'result', message: `✅ **Restored ${restored} companies** from snapshot: _"${snap.label}"_\n\nThe database and Google Sheet have been restored. Refresh the page to see your companies.` });
       return;
     }
 

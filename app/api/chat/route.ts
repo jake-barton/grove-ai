@@ -245,10 +245,15 @@ Rules:
 - "update the IBM contact" → UPDATE_CONTACTS (targets: ["IBM"])
 - "find 3 new companies WITH good contacts" → RESEARCH_NEW (count: 3) — the "contacts" is a quality filter, not an update request
 - "set Microsoft score to 9" → EDIT_FIELDS
-- "delete everything" → DELETE (targets: [], scoreBelow: null)
-- "remove all companies with a rating below 3/10" → DELETE (targets: [], scoreBelow: 3)
-- "delete low scoring companies" → DELETE (targets: [], scoreBelow: 4)
-- "remove companies below 5" → DELETE (targets: [], scoreBelow: 5)
+- "delete everything" → DELETE (targets: [], scoreBelow: null, deleteAll: true)
+- "delete all companies" → DELETE (targets: [], scoreBelow: null, deleteAll: true)
+- "remove all companies with a rating below 3/10" → DELETE (targets: [], scoreBelow: 3, deleteAll: false)
+- "delete all 2/10 companies" → DELETE (targets: [], scoreBelow: 3, deleteAll: false) — "2/10" means score ≤ 2, so scoreBelow: 3
+- "delete all companies under a score of 3/10" → DELETE (targets: [], scoreBelow: 3, deleteAll: false)
+- "delete low scoring companies" → DELETE (targets: [], scoreBelow: 4, deleteAll: false)
+- "remove companies below 5" → DELETE (targets: [], scoreBelow: 5, deleteAll: false)
+- "delete companies with a score of 3 or less" → DELETE (targets: [], scoreBelow: 4, deleteAll: false)
+- IMPORTANT: if the user mentions ANY score/rating number with delete, ALWAYS set scoreBelow and NEVER set deleteAll: true
 - "what companies do we have?" → CHAT
 - "make the sheet the same as the app" → SYNC_SHEET
 - "our info doesn't match the sheet" → SYNC_SHEET
@@ -485,7 +490,25 @@ If nothing to parse, return [].`;
     // ── DELETE ─────────────────────────────────────────────────────────────────
     if (intent.intent === 'DELETE') {
       const targetNames: string[] = intent.targets || [];
-      const scoreBelow: number | null = intent.scoreBelow ?? null;
+      let scoreBelow: number | null = intent.scoreBelow ?? null;
+
+      // Safety net: if the classifier missed a score in the message, extract it here.
+      // "delete all 2/10 companies" or "delete companies scored 3 or below" etc.
+      if (scoreBelow === null && targetNames.length === 0) {
+        const scoreMatch = userMessage.match(/\b(\d+)\s*(?:\/\s*10|out of 10)?\s*(?:companies|or\s+(?:below|less|under)|and\s+below)/i)
+          || userMessage.match(/(?:below|under|less\s+than)\s+(\d+)/i)
+          || userMessage.match(/\ball\s+(\d+)\/10\b/i);
+        if (scoreMatch) {
+          const parsed = parseInt(scoreMatch[1], 10);
+          // "all 2/10 companies" means score == 2, so delete where score <= 2 (i.e. < 3)
+          // "below 3" means score < 3
+          if (parsed >= 1 && parsed <= 10) {
+            // If phrased as "X/10 companies" treat as "scored X or below"
+            scoreBelow = userMessage.match(/\d+\/10/) ? parsed + 1 : parsed;
+          }
+        }
+      }
+
       const deleteAll = targetNames.length === 0 && scoreBelow === null;
 
       // Score-filtered delete — resolve names from live company list
@@ -514,6 +537,12 @@ If nothing to parse, return [].`;
       emit({ type: 'step', text: deleteAll ? 'Clearing all companies from database…' : `Deleting ${targetNames.join(', ')}…`, icon: '🗑️' });
 
       if (deleteAll) {
+        // Require explicit confirmation word to prevent accidental wipes
+        const hasConfirmation = /\b(confirm|yes|all|everything|clear all|delete all|wipe)\b/i.test(userMessage);
+        if (!hasConfirmation) {
+          emit({ type: 'result', message: `⚠️ This will delete **all ${existingCompanies.length} companies** from the database and spreadsheet.\n\nType **"confirm delete all"** to proceed, or be more specific (e.g. "delete companies with score below 3").` });
+          return;
+        }
         const clearResponse = await fetch(`${request.nextUrl.origin}/api/companies/clear`, { method: 'DELETE', headers: INTERNAL_HEADERS });
         if (!clearResponse.ok) {
           emit({ type: 'result', message: '❌ Failed to delete companies.' });

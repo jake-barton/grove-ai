@@ -1,6 +1,7 @@
 // AI Agent that orchestrates web search and research tasks
-import { generateWithOpenAI, extractContactWithAI } from '@/lib/openai';
+import { extractContactWithAI } from '@/lib/openai';
 import { Company } from '@/lib/types';
+import { runAllAgents, type AgentSearchData } from '@/lib/research-agents';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 import {
@@ -351,10 +352,10 @@ export async function researchCompany(companyName: string): Promise<Company> {
     console.log(`🔗 LinkedIn company page scraped: ${linkedInCompanyUrl} (${linkedInCompanyContent.length} chars)`);
   }
   if (leadershipContent) {
-    console.log(`� Leadership page content found (${leadershipContent.length} chars)`);
+    console.log(`📋 Leadership page content found (${leadershipContent.length} chars)`);
   }
 
-  // Format Hunter contacts as readable text for the AI prompt
+  // Format Hunter contacts as readable text for the AI agents
   const hunterContactsText = hunterContacts.length > 0
     ? hunterContacts
         .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
@@ -369,213 +370,64 @@ export async function researchCompany(companyName: string): Promise<Company> {
         .join('\n')
     : 'No Hunter.io contacts found';
 
-  // Build comprehensive prompt for OpenAI
-  const researchPrompt = `Research the company "${companyName}" as a potential sponsor for Sloss.Tech, a technology conference in Birmingham, Alabama.
+  // Collect all search results for the agents
+  const allSearchResults = [
+    ...companySearchResults,
+    ...sponsorshipSearchResults,
+    ...contactSearchResults,
+    ...initiativesSearchResults,
+    ...linkedInCompanyResults,
+    ...linkedInPeopleResults,
+    ...recentNewsResults,
+    ...execSearchResults,
+    ...pressQuoteResults,
+  ];
 
-TODAY'S DATE: ${new Date().toISOString().split('T')[0]} — only use data that reflects the company's CURRENT state in ${currentYear}.
+  // Build the shared data payload passed to all three agents
+  const agentData: AgentSearchData = {
+    companyName,
+    companyWebsite,
+    websiteContent,
+    leadershipContent,
+    hunterContactsText,
+    hunterContacts,
+    linkedInCompanyUrl,
+    linkedInCompanyContent,
+    allSearchResults,
+    sponsorshipResults: sponsorshipSearchResults,
+    contactResults: contactSearchResults,
+    linkedInPeopleResults,
+    execResults: execSearchResults,
+    pressQuoteResults,
+    recentNewsResults,
+  };
 
-I've gathered this information:
+  // ── Run all three specialist agents in parallel ──────────────────────────
+  // ResearchAgent + ContactAgent run simultaneously; ScoringAgent follows after Research
+  const { research, scoring, contact } = await runAllAgents(agentData);
 
-**Company Website & Info:**
-${companyWebsite}
-${websiteContent.substring(0, 500)}
+  // ── Merge agent outputs ──────────────────────────────────────────────────
+  const companyData = {
+    company_name: companyName,
+    industry: research.industry,
+    company_size: research.company_size,
+    website: research.website || companyWebsite,
+    linkedin_company: research.linkedin_company,
+    contact_name: contact.contact_name,
+    contact_position: contact.contact_position,
+    contact_linkedin: contact.contact_linkedin,
+    contact_info: contact.contact_info,
+    email_format: research.email_format,
+    previously_sponsored: research.previously_sponsored ? research.previous_events : [],
+    what_they_sponsored: research.what_they_sponsored,
+    why_good_fit: scoring.why_good_fit,
+    sponsorship_likelihood_score: scoring.sponsorship_likelihood_score,
+    relevant_notes: research.relevant_notes,
+    relevant_links: research.relevant_links,
+  };
 
-**🎯 HUNTER.IO VERIFIED CONTACTS (highest priority — these are REAL people with verified emails):**
-${hunterContactsText}
-
-**👥 LEADERSHIP/TEAM PAGE (scraped directly from company website — very reliable):**
-${leadershipContent || 'Not found'}
-
-**LinkedIn Company Page (scraped public data):**
-URL: ${linkedInCompanyUrl || 'Not found'}
-Content: ${linkedInCompanyContent.substring(0, 600) || 'Not available'}
-
-**LinkedIn Company Search Results:**
-${JSON.stringify(linkedInCompanyResults.slice(0, 3), null, 2)}
-
-**LinkedIn People / Decision-Makers (primary source):**
-${JSON.stringify(linkedInPeopleResults.slice(0, 5), null, 2)}
-
-**LinkedIn People — Current Employees (${currentYear} signals, most reliable):**
-${JSON.stringify(linkedInCurrentResults.slice(0, 5), null, 2)}
-
-**Recent News / PR — ${currentYear} (use to verify who is actively representing the company NOW):**
-${JSON.stringify(recentNewsResults.slice(0, 5), null, 2)}
-
-**Named Executive Searches (people actually quoted/named in non-LinkedIn sources — very current):**
-${JSON.stringify(execSearchResults.slice(0, 5), null, 2)}
-
-**Press Quote Results (people who made public statements for ${companyName} in ${currentYear}):**
-${JSON.stringify(pressQuoteResults.slice(0, 5), null, 2)}
-
-**Sponsorship History (${prevYear}–${currentYear}):**
-${JSON.stringify(sponsorshipSearchResults.slice(0, 5), null, 2)}
-
-**Decision-Makers (LinkedIn Search via Google):**
-${JSON.stringify(contactSearchResults.slice(0, 5), null, 2)}
-
-**Community Initiatives (${prevYear}–${currentYear}):**
-${JSON.stringify(initiativesSearchResults.slice(0, 5), null, 2)}
-
-**All Search Snippets (use these to find industry, company size, etc):**
-${[...companySearchResults, ...sponsorshipSearchResults, ...recentNewsResults, ...execSearchResults].slice(0, 12).map(r => r.snippet).filter(Boolean).join('\n')}
-
-**Contact Emails Found (scraped from website):**
-${emails.slice(0, 3).join(', ') || 'None found'}
-
-🚨 CRITICAL INSTRUCTIONS 🚨
-
-STEP 0: EXTRACT INDUSTRY AND COMPANY SIZE
-- Read the "All Search Snippets" above carefully
-- Extract the industry (e.g. "Cloud Security", "Developer Tools", "Data Analytics")
-- Extract company size if mentioned (e.g. "3,000 employees", "publicly traded", "Series D")
-- If not in snippets, make a reasonable inference from what the company does
-- NEVER use "Unknown" - always provide a best answer
-
-STEP 1: FIND THE BEST CONTACT — USE THESE SOURCES IN ORDER OF PRIORITY:
-
-  ★ PRIORITY 1 — HUNTER.IO VERIFIED CONTACTS (use these first if available)
-  - Look at "HUNTER.IO VERIFIED CONTACTS" section above
-  - Hunter.io crawls company websites and finds REAL published contacts with VERIFIED emails
-  - Pick the most senior person in: Marketing, Partnerships, Sponsorships, Community, or C-Suite
-  - Best titles: CMO, VP Marketing, Head of Sponsorships, Director of Partnerships, CEO, President
-  - If a Hunter contact has a LinkedIn URL, use it — it's been verified by Hunter
-  - Use their email directly as contact_info
-  - This is the MOST RELIABLE source — a real name + verified email is infinitely better than a guess
-
-  ★ PRIORITY 2 — LEADERSHIP/TEAM PAGE (scraped directly from company website)
-  - Look at "LEADERSHIP/TEAM PAGE" section above
-  - Company websites often list their exec team with names, titles, and sometimes emails
-  - Extract the most relevant person (CMO / VP Marketing / Partnerships / Community)
-  - Names and titles here are ground truth — the company published them themselves
-
-  ★ PRIORITY 3 — PRESS QUOTES / NAMED EXECUTIVES (from exec + press quote searches)
-  - Look at "Named Executive Searches" and "Press Quote Results" sections
-  - People named in press releases and quotes ARE currently at the company — companies don't quote former employees
-  - Extract their name and title from the snippet
-  - Format: "Jane Smith, VP of Marketing at ${companyName}, said..."
-
-  ★ PRIORITY 4 — LINKEDIN (least reliable — often stale, only use if above sources failed)
-  - Look through "LinkedIn People — Current Employees (${currentYear} signals)" first
-  - Then "LinkedIn People / Decision-Makers"
-  - Only accept if snippet shows CURRENT title at ${companyName} in present tense
-  - REJECT anyone with: "Former", "Ex-", "previously", "left", "now at", "joined [other co]"
-  - REJECT anyone whose snippet shows them at a DIFFERENT company
-  - If ANY doubt, use "Not found" — staleness is the #1 failure mode here
-
-STEP 2: EXTRACT THE CONTACT NAME
-- Use the name from whichever Priority source you found in Step 1
-- For Hunter: use first_name + last_name fields
-- For leadership page: extract the name closest to a matching title
-- For press quotes: extract the name before the comma/dash before the title
-- NEVER invent names. NEVER use: "John Doe", "Jane Doe", "John Smith"
-- If no real name found anywhere, use "Not found"
-
-STEP 2b: FIND THE CONTACT'S PERSONAL LINKEDIN URL
-- Once you have a contact name, search ALL search result snippets, titles, and links for their LinkedIn profile URL
-- LinkedIn personal profile URLs look like: "linkedin.com/in/firstname-lastname-12345"
-- Check ALL sections: Hunter contacts (linkedin field), LinkedIn People results, Named Executive searches, Press Quote results
-- The URL often appears in the "link" field of a result OR embedded in a snippet/title
-- COPY the EXACT URL character-for-character — including any numeric suffix (e.g. "-a1b2c3")
-- If the contact was found via Hunter and Hunter provided a linkedin field, USE THAT URL
-- If you cannot find a LinkedIn URL for this specific person in the search data, use "Not found"
-- NEVER construct or guess a LinkedIn URL — only use URLs that appear verbatim in the search data
-
-STEP 3: GET THE CONTACT EMAIL
-- If Hunter.io found this person: use their email from the Hunter results (it's verified)
-- Otherwise, check "Contact Emails Found" at the bottom for domain emails
-- Otherwise use "Not found"
-
-STEP 4: VERIFY COMPANY LINKEDIN
-- Look through "LinkedIn Company Search Results" section
-- Company LinkedIn URLs look like: "linkedin.com/company/amazon-web-services"
-- Copy the EXACT first result "link" value that contains "linkedin.com/company/"
-- If not found, use "Not found"
-
-STEP 5: VERIFY SPONSORSHIP DATA
-- Look ONLY in "Sponsorship History (${prevYear}–${currentYear})" section
-- Only count events from ${prevYear} or ${currentYear} — older events are low signal
-- Extract specific event names: "TechCrunch Disrupt 2025", "AWS re:Invent 2025", "SXSW 2026"
-- If no recent events mentioned, return empty array []
-
-STRICT RULES:
-❌ DO NOT create or invent URLs — only copy exact "link" values from search results
-❌ DO NOT use generic placeholder names
-❌ DO NOT invent events — only use events explicitly mentioned in search results
-❌ DO NOT save a contact if you are not CERTAIN they currently work at ${companyName} in ${currentYear}
-✅ DO cross-reference LinkedIn results with Recent News to confirm recency
-✅ DO copy URLs exactly character-for-character from the JSON
-✅ DO prefer "Not found" over a potentially stale contact — accuracy matters more than completeness
-✅ DO use "Not found" when data genuinely doesn't exist
-
-Format as JSON:
-{
-  "company_name": "${companyName}",
-  "industry": "string (from search results)",
-  "company_size": "string (from search results or 'Unknown')",
-  "website": "${companyWebsite}",
-  "linkedin_company": "string (EXACT URL from search results or 'Not found')",
-  "contact_name": "string (EXACT name from search results or 'Not found')",
-  "contact_position": "string (from search results)",
-  "contact_linkedin": "string (EXACT LinkedIn URL with numbers from search results or 'Not found')",
-  "contact_info": "string (email if found or 'Not found')",
-  "email_format": "string (pattern or 'Not available')",
-  "previously_sponsored": ["array of specific events mentioned in search results - empty [] if none"],
-  "what_they_sponsored": "string (specific examples from search results or 'No verified sponsorships found')",
-  "why_good_fit": "string — exactly 3 bullet points each starting with '• ', covering: (1) technology/product alignment with Sloss.Tech, (2) community/developer investment signals from search results, (3) sponsorship history or likelihood. ONLY facts from search results — no invented claims.",
-  "sponsorship_likelihood_score": number (1-10 based on evidence found),
-  "relevant_notes": "string (key insights from search results)",
-  "relevant_links": ["array of EXACT URLs from search results only - max 3"]
-}
-
-Respond ONLY with valid JSON. No explanations, no markdown, just pure JSON.`;
-
-  const aiResponse = await generateWithOpenAI(researchPrompt);
-
-  // Parse AI response with better error handling
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let companyData: any;
-  try {
-    // Try to extract JSON from response - look for both {} and markdown code blocks
-    let jsonText = aiResponse;
-    
-    // Remove markdown code blocks if present
-    jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-    
-    // Find JSON object
-    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      let jsonString = jsonMatch[0];
-      
-      // Fix trailing commas before closing braces/brackets
-      jsonString = jsonString.replace(/,(\s*[}\]])/g, '$1');
-
-      // Fix unescaped newlines/tabs ONLY inside JSON string values
-      // Strategy: replace literal newlines inside double-quoted strings only
-      jsonString = jsonString.replace(/"((?:[^"\\]|\\.)*)"/g, (_match, inner: string) => {
-        const fixed = inner
-          .replace(/\n/g, '\\n')
-          .replace(/\r/g, '\\r')
-          .replace(/\t/g, '\\t');
-        return `"${fixed}"`;
-      });
-      
-      try {
-        companyData = JSON.parse(jsonString);
-      } catch {
-        // If still fails, strip remaining non-printable control chars and retry
-        console.warn('First JSON parse failed, trying to strip control characters...');
-        jsonString = jsonString.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
-        companyData = JSON.parse(jsonString);
-      }
-    } else {
-      throw new Error('No JSON found in response');
-    }
-  } catch (err) {
-    console.error('JSON parsing error:', err);
-    console.error('AI Response:', aiResponse.substring(0, 500));
-    throw new Error(`Failed to parse AI response for ${companyName}`);
-  }
+  // ── Validation (same as before — agents are trusted but we still sanity-check) ──
+  console.log(`\n🔍 AGENT OUTPUTS merged for ${companyName}:`, JSON.stringify(companyData, null, 2));
 
   // ====== STRICT VALIDATION LAYER ======
   // Validate all URLs and data before accepting
@@ -594,17 +446,6 @@ Respond ONLY with valid JSON. No explanations, no markdown, just pure JSON.`;
   console.log(`✅ Website validated: ${validatedWebsite || 'NONE'}`);
   
   // Validate LinkedIn URLs - MUST be real LinkedIn URLs from search
-  const allSearchResults = [
-    ...contactSearchResults,
-    ...sponsorshipSearchResults,
-    ...initiativesSearchResults,
-    ...linkedInCompanyResults,
-    ...linkedInPeopleResults,
-    ...linkedInCurrentResults,
-    ...recentNewsResults,
-    ...execSearchResults,
-    ...pressQuoteResults,
-  ];
   
   console.log(`🔗 Validating LinkedIn URLs...`);
   console.log(`   Contact LinkedIn: ${companyData.contact_linkedin}`);

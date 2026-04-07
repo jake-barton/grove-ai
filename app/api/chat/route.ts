@@ -6,6 +6,7 @@ import prisma from '@/lib/db';
 import { handleNaturalLanguageFormat } from '@/lib/sheets-formatter';
 import { getAIModeFromRequest } from '@/lib/ai-mode';
 import { getSheetCompanyNames } from '@/lib/sheets-sync';
+import * as groveMemory from '@/lib/grove-memory';
 
 // Allow up to 300 seconds for long-running research on Vercel Pro
 export const maxDuration = 300;
@@ -182,6 +183,10 @@ export async function POST(request: NextRequest) {
       void systemMessage; // system prompt is used as base for enrichedSystem below
       const userMessage = messages[messages.length - 1]?.content || '';
 
+    // ── Memory: extract & save facts passively, then build context summary ───
+    await groveMemory.extractAndSave(userMessage).catch(() => {/* non-blocking */});
+    const memorySummary = await groveMemory.getSummary().catch(() => '');
+
     // ── AI INTENT CLASSIFIER (OpenAI Function Calling) ────────────────────────
     // Uses tool/function calling — the model MUST call one of our named tools.
     // No JSON parsing fragility, no regex, no prompt-engineering guesswork.
@@ -236,6 +241,7 @@ Return ONLY a JSON array of company name strings. Example: ["Stripe", "Twilio", 
         (failCount > 0 ? `❌ **Failed validation:** ${failCount}\n\n` : '') +
         `**Refresh the page** to see all companies in the sidebar.`;
 
+      await groveMemory.recordAction('RESEARCH', `Researched ${chosenCompanies.join(', ')} — ${savedCompanies.length} saved`).catch(() => {});
       emit({ type: 'result', message: final, savedCompanies: savedCompanies.length });
       return;
     }
@@ -440,6 +446,7 @@ If nothing to parse, return [].`;
           if (res.ok) deleted++;
         }
         const names = toDelete.map(c => c.company_name).join(', ');
+        await groveMemory.recordAction('DELETE', `Deleted ${deleted} companies with score below ${scoreBelow}/10: ${names}`).catch(() => {});
         emit({ type: 'result', message: `✅ Deleted ${deleted} ${deleted === 1 ? 'company' : 'companies'} with score below ${scoreBelow}/10: **${names}**\n\n_Say **"undo"** to restore these companies._` });
         return;
       }
@@ -502,6 +509,7 @@ If nothing to parse, return [].`;
         const res = await fetch(`${request.nextUrl.origin}/api/companies/${company.id}`, { method: 'DELETE', headers: INTERNAL_HEADERS });
         if (res.ok) deleted++;
       }
+      await groveMemory.recordAction('DELETE', `Deleted ${deleted} companies: ${toDeleteNamed.map(c => c.company_name).join(', ')}`).catch(() => {});
       emit({ type: 'result', message: `✅ Deleted ${deleted} ${deleted === 1 ? 'company' : 'companies'}: **${toDeleteNamed.map(c => c.company_name).join(', ')}**\n\n_Say **"undo"** to restore them._` });
       return;
     }
@@ -626,10 +634,12 @@ If nothing to parse, return [].`;
     }
 
     // ── CHAT FALLBACK ──────────────────────────────────────────────────────────
-    // Inject the live company list into the system prompt so the AI knows what's in the pipeline
+    // Inject the live company list + Grove memory into the system prompt
     const enrichedSystem: ChatMessage = {
       role: 'system',
-      content: SYSTEM_PROMPT + `\n\n## Current Pipeline Companies (${existingCompanies.length} total)\n${companySummary}\n\nWhen answering questions about "our companies", "the pipeline", "what do we have", etc., use this list as the source of truth. Do NOT make up company names or invent a generic list — only reference the companies above.`,
+      content: SYSTEM_PROMPT
+        + (memorySummary ? `\n\n${memorySummary}` : '')
+        + `\n\n## Current Pipeline Companies (${existingCompanies.length} total)\n${companySummary}\n\nWhen answering questions about "our companies", "the pipeline", "what do we have", etc., use this list as the source of truth. Do NOT make up company names or invent a generic list — only reference the companies above.`,
     };
     const enrichedMessages: ChatMessage[] = [enrichedSystem, ...messages];
     const chatResponse = await chatWithOpenAI(enrichedMessages, undefined, aiMode);

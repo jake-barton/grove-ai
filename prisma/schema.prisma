@@ -39,3 +39,30 @@ model Company {
 
   @@map("companies")
 }
+
+// Automatic snapshot taken before any destructive action (delete, clear)
+// Lets the team undo any mistake by saying "undo" or "restore"
+model Snapshot {
+  id          String   @id @default(cuid())
+  label       String                        // e.g. "Before delete: IBM, Google"
+  trigger     String                        // e.g. "DELETE", "CLEAR"
+  data        Json                          // full array of company objects
+  created_at  DateTime @default(now())
+
+  @@map("snapshots")
+}
+
+// Persistent session memory — Grove remembers preferences, past actions, and
+// instructions across conversations (inspired by open-multi-agent SharedMemory)
+model Memory {
+  id          String   @id @default(cuid())
+  session_key String   @default("global")  // session or user identifier
+  namespace   String                        // e.g. "preferences", "instructions", "context"
+  key         String                        // e.g. "industry_focus", "last_action"
+  value       String                        // always stored as string (JSON.stringify for objects)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@unique([session_key, namespace, key])
+  @@map("memory")
+}
